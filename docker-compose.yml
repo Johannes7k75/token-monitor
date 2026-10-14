@@ -1,0 +1,22 @@
+services:
+  hub:
+    image: ghcr.io/johannes7k75/token-hub:latest
+    container_name: token-monitor-hub
+    restart: unless-stopped
+    ports:
+      - ":17321"
+    environment:
+      TOKEN_MONITOR_SECRET: ${TOKEN_MONITOR_SECRET}
+      TOKEN_MONITOR_HUB_URL: ${TOKEN_MONITOR_HUB_URL}
+      TOKEN_MONITOR_DATA_FILE: /app/data/devices.json
+    volumes:
+      - token-monitor-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:17321/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  token-monitor-data:
