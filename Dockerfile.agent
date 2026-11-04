@@ -1,0 +1,25 @@
+# Headless collector image; the Hub uses Dockerfile.hub.
+FROM docker.io/library/node:22-slim
+
+ENV NODE_ENV=production
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund \
+  && npm cache clean --force
+
+# Bake in the verified agent binary rather than downloading on each startup.
+COPY scripts/ensure-vendored-tokscale.js scripts/vendoredTokscale.js ./scripts/
+COPY scripts/vendor/tokscale.json ./scripts/vendor/tokscale.json
+RUN npm run ensure:tokscale
+
+COPY src ./src
+
+RUN mkdir -p /app/data && chown node:node /app/data
+USER node
+
+ENV TOKEN_MONITOR_SHARED_DIR=/app/data \
+    TOKSCALE_CONFIG_DIR=/app/data/tokscale
+
+VOLUME /app/data
+ENTRYPOINT ["node", "src/agent/agent.js"]

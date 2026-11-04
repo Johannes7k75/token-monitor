@@ -46,6 +46,18 @@ TOKEN_MONITOR_DEVICE_ID=build-server
 
 The agent reads `.env` from the checkout root, wherever it is started from.
 
+### Extra session directories
+
+For supported file-based sources, `TOKSCALE_EXTRA_DIRS` adds directories alongside the tool's default locations. Use comma-separated `client:absolute-path` entries, for example:
+
+```env
+TOKSCALE_EXTRA_DIRS=claude:/mnt/claude-projects,codex:/mnt/codex-sessions
+```
+
+Keep files in their original tool format and enable the corresponding clients in `TOKEN_MONITOR_CLIENTS`. This is usage scanning, not a general importer for exported chat text. Paths cannot contain commas. Modern OpenCode SQLite databases, native Cursor data, Goose, MiniMax Code and Proma do not support this extra-directory mechanism; use their provider-specific source locations instead.
+
+Restart the agent after changing the environment. These inherited extra roots are scanned at startup and on periodic full scans (`TOKEN_MONITOR_INTERVAL_MS`, default `300000`, or five minutes); they are not added to the agent's file watchers. Extra roots do not guarantee that provider-specific titles and other session metadata are discovered.
+
 ### Title-sync state and migration
 
 Title sync is off by default and needs opt-in on both the Hub and agent. For the agent, use `TOKEN_MONITOR_SYNC_SESSION_TITLES=1` or `--sync-session-titles`. The widget's title-display setting is independent. See the [title-sync API](API.md#put-apisynctitlesdeviceid) for protocol and legacy-agent cleanup details.
@@ -53,6 +65,58 @@ Title sync is off by default and needs opt-in on both the Hub and agent. For the
 Before deleting or moving the agent's state directory (`TOKEN_MONITOR_SHARED_DIR`, if set), stop the agent/service and run `npm run agent:once -- --sync-session-titles=false` with the original Hub URL, credentials, Device ID and state directory. Keep the state until revocation is confirmed; pending cleanup or state warnings mean it must be retained. This command still collects and uploads usage without titles after cleanup.
 
 To avoid another usage upload, delete the old device on the old Hub instead. Keep the original agent stopped so it cannot recreate the device. Revocation does not remove exported copies or backups.
+
+## Run with Docker
+
+The agent has its own `Dockerfile.agent` and `docker-compose.agent.yml`. It connects to an existing Hub and does not expose any ports. The image runs as the `node` user (UID/GID 1000) and includes the checksum-verified pinned Tokscale binary.
+
+Create a `.env` in the checkout root:
+
+```env
+TOKEN_MONITOR_HUB_URL=http://your-hub-host:17321
+TOKEN_MONITOR_SECRET=YOUR_SHARED_SECRET
+TOKEN_MONITOR_DEVICE_ID=my-server-agent
+TOKEN_MONITOR_CLIENTS=claude,codex
+TOKSCALE_EXTRA_DIRS=claude:/sessions/claude,codex:/sessions/codex
+```
+
+Use a Hub address reachable from the container; `localhost` refers to the agent container itself. Give each agent a unique device ID. Avoid collecting the same sessions on another agent or widget because the Hub adds device totals without deduplicating across devices.
+
+By default, Compose mounts `./agent-sessions` read-only at `/sessions`. Prepare the directories and place native Claude/Codex session files in the corresponding trees:
+
+```bash
+mkdir -p agent-sessions/claude agent-sessions/codex
+docker compose -f docker-compose.agent.yml up -d --build
+docker compose -f docker-compose.agent.yml logs -f agent
+```
+
+To use an existing host directory, set `TOKEN_MONITOR_AGENT_SESSIONS_DIR` to its absolute path. Prepare and populate it before starting Compose, and make it readable by UID 1000. Short volume syntax creates an empty host directory if it is missing. `TOKSCALE_EXTRA_DIRS` always names paths **inside** the container. You can also replace the session bind mount in the agent Compose file with individual read-only mounts, for example:
+
+```yaml
+volumes:
+  - token-agent-data:/app/data
+  - /home/alice/.claude/projects:/sessions/claude:ro
+  - /home/alice/.codex/sessions:/sessions/codex:ro
+```
+
+Add a separate mount and matching extra-root entry for Codex `archived_sessions` if needed. Sources unsupported by `TOKSCALE_EXTRA_DIRS` need a bind mount at their expected source location or their supported path override.
+
+The `token-agent-data` volume persists collector archives, title-sync cleanup state and Tokscale caches across container replacement. Keep it when updating the image. Follow the title-sync cleanup instructions above before removing an agent that has shared titles.
+
+The Compose configuration uses periodic scans, every five minutes by default; set `TOKEN_MONITOR_INTERVAL_MS` to change the cadence. Account-limit probes are disabled by default because the image has no host CLI logins. Enabling them requires the appropriate provider credentials and, for CLI-based probes, the corresponding tools inside the container.
+
+Check collection without posting to the Hub:
+
+```bash
+docker compose -f docker-compose.agent.yml run --rm agent --once --dry-run
+```
+
+New `v*` release tags also publish `ghcr.io/johannes7k75/token-agent:<version>` and `:latest`. To use a published image instead of building locally:
+
+```bash
+docker compose -f docker-compose.agent.yml pull
+docker compose -f docker-compose.agent.yml up -d --no-build
+```
 
 ## Verify
 

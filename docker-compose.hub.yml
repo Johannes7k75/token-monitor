@@ -1,13 +1,23 @@
+# Preserve the existing Hub project name and its persistent data volume.
+name: token-monitor
+
 services:
   hub:
     image: ghcr.io/johannes7k75/token-hub:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.hub
+    init: true
     container_name: token-monitor-hub
     restart: unless-stopped
     ports:
       - "17321:17321"
     environment:
-      TOKEN_MONITOR_SECRET: ${TOKEN_MONITOR_SECRET}
+      # Shared secret matching the agents and widgets connecting to this Hub.
+      TOKEN_MONITOR_SECRET: ${TOKEN_MONITOR_SECRET:-}
+      # Set TOKEN_MONITOR_HUB_URL to the address devices use to reach this Hub.
       TOKEN_MONITOR_HUB_URL: ${TOKEN_MONITOR_HUB_URL}
+      # Store device data in the persistent volume mounted below.
       TOKEN_MONITOR_DATA_FILE: /app/data/devices.json
     volumes:
       - token-monitor-data:/app/data

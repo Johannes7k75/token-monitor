@@ -1,5 +1,6 @@
 node_modules/
 data/
+agent-sessions/
 dist/
 build/
 .git/
@@ -12,7 +13,7 @@ tmp/
 *.log
 npm-debug.log*
 .DS_Store
-Dockerfile
+Dockerfile.*
 .dockerignore
 docker-compose*.yml
 compose.y*ml

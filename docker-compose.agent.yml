@@ -1,0 +1,36 @@
+name: token-monitor-agent
+
+services:
+  agent:
+    image: ghcr.io/johannes7k75/token-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    init: true
+    restart: unless-stopped
+    environment:
+      # Set TOKEN_MONITOR_HUB_URL to a reachable Hub.
+      TOKEN_MONITOR_HUB_URL: ${TOKEN_MONITOR_HUB_URL}
+      # Shared secret matching the Hub.
+      TOKEN_MONITOR_SECRET: ${TOKEN_MONITOR_SECRET:-}
+      # Set a unique TOKEN_MONITOR_DEVICE_ID for this agent.
+      TOKEN_MONITOR_DEVICE_ID: ${TOKEN_MONITOR_DEVICE_ID}
+      # Comma-separated tools to collect; an empty value disables collection.
+      TOKEN_MONITOR_CLIENTS: ${TOKEN_MONITOR_CLIENTS-claude,codex}
+      # Full-scan interval in milliseconds; defaults to five minutes.
+      TOKEN_MONITOR_INTERVAL_MS: ${TOKEN_MONITOR_INTERVAL_MS:-300000}
+      # Inherited extra roots are scanned periodically, not added to file watchers.
+      TOKEN_MONITOR_WATCH: "0"
+      # Enable account-limit probes only after configuring provider credentials/tools.
+      TOKEN_MONITOR_LIMITS_ENABLED: ${TOKEN_MONITOR_LIMITS_ENABLED:-0}
+      # Opt in to title sync; the Hub must allow it too.
+      TOKEN_MONITOR_SYNC_SESSION_TITLES: ${TOKEN_MONITOR_SYNC_SESSION_TITLES:-0}
+      # Paths here are inside the container. Mount corresponding host directories below.
+      TOKSCALE_EXTRA_DIRS: ${TOKSCALE_EXTRA_DIRS:-claude:/sessions/claude,codex:/sessions/codex}
+    volumes:
+      - token-agent-data:/app/data
+      # Host session directory, mounted read-only inside the container.
+      - "${TOKEN_MONITOR_AGENT_SESSIONS_DIR:-./agent-sessions}:/sessions:ro"
+
+volumes:
+  token-agent-data:

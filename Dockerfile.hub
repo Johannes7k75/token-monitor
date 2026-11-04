@@ -1,4 +1,5 @@
-# Hub-only image. The hub is plain Node with no tokscale binary:
+# Hub-only image; the headless collector uses Dockerfile.agent.
+# The hub is plain Node with no tokscale binary:
 # `npm run hub` is `node src/hub/server.js` and never downloads anything.
 FROM docker.io/library/node:22-slim
 

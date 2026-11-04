@@ -1,6 +1,8 @@
 # Run the Hub with Docker
 
-The Hub image is published to `ghcr.io/johannes7k75/token-hub`. It runs the Node Hub without the desktop widget or collector.
+The Hub image is published to `ghcr.io/johannes7k75/token-hub` and builds from `Dockerfile.hub`. It runs the Node Hub without the desktop widget or collector.
+
+For a separate collector container, see [Run the headless agent with Docker](headless-agent.md#run-with-docker) and use `docker-compose.agent.yml`.
 
 From a checkout, create a `.env` file with your shared secret and the Hub URL devices will use:
 
@@ -9,12 +11,20 @@ TOKEN_MONITOR_SECRET=replace-with-a-private-secret
 TOKEN_MONITOR_HUB_URL=http://your-hub-host:17321
 ```
 
-Start the Hub:
+Start the Hub using the published image:
 
 ```bash
-docker compose pull
-docker compose up -d
+docker compose -f docker-compose.hub.yml pull
+docker compose -f docker-compose.hub.yml up -d --no-build
 ```
+
+Or build the Hub image from the checkout:
+
+```bash
+docker compose -f docker-compose.hub.yml up -d --build
+```
+
+Both Hub and agent Compose files support local builds and use `init: true` for signal forwarding and child-process cleanup. Select the desired file explicitly with `-f`.
 
 Compose maps host port `17321` to container port `17321` and stores Hub data in the `token-monitor-data` volume. Configure each device with the Hub URL and the same secret.
 
