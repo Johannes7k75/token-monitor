@@ -40,3 +40,9 @@ git push origin v0.86.1
 This builds the tagged checkout and publishes both `ghcr.io/johannes7k75/token-hub:0.86.1` and `ghcr.io/johannes7k75/token-hub:latest`. The workflow authenticates with the repository's `GITHUB_TOKEN` and package write permission.
 
 Compose uses `latest` by default. To pin a deployment, change its image to a published version, such as `ghcr.io/johannes7k75/token-hub:0.86.1`.
+
+### GHCR publishing permissions
+
+The release workflow needs `packages: write` and access to the container package. An existing package can be connected to this repository without granting its Actions workflows write access.
+
+If publishing fails with `permission_denied: write_package`, open the container's **Package settings → Manage Actions access**, add `Johannes7k75/token-monitor` if missing, and give it the **Write** role. Then rerun the failed release workflow. Repeat for `token-agent` if it has the same error. Repository association and Actions access are separate settings; adding more workflow token permissions does not replace the package access grant.
