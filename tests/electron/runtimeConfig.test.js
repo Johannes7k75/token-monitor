@@ -17,6 +17,7 @@ const {
   usageConfigFromSettings
 } = require('../../src/electron/runtimeConfig');
 const { alibabaVariant } = require('../../src/shared/providers/alibaba/limits');
+const { clineApiKey } = require('../../src/shared/providers/cline/limits');
 
 const BASE_USAGE_SETTINGS = Object.freeze({
   clients: 'claude',
@@ -251,6 +252,24 @@ test('runtime config keeps usage, limits credentials, and envelope in separate i
     agentVersion: '1.2.3',
     agentRuntime: 'electron-widget'
   });
+});
+
+// Cline is key-only on a machine that runs neither Cline Desktop nor its CLI: the
+// saved key is the whole credential lane, and nothing else populates it. Field
+// wiring that keeps a credential out of the limits config therefore drops the key
+// on the floor — the provider then reads only CLINE_API_KEY / CLINEPASS_API_KEY or
+// the discovered sign-in, and a configured key silently collects nothing.
+test('a saved Cline API key reaches the limits config and outranks the environment', () => {
+  const saved = limitsConfigFromSettings({ clineApiKey: 'sk-cline-saved' }, { env: {} });
+  assert.equal(saved.clineApiKey, 'sk-cline-saved');
+  assert.equal(clineApiKey({}, saved), 'sk-cline-saved');
+
+  const fromEnv = limitsConfigFromSettings({}, { env: { CLINE_API_KEY: 'sk-cline-env' } });
+  assert.equal(clineApiKey({ CLINE_API_KEY: 'sk-cline-env' }, fromEnv), 'sk-cline-env');
+  assert.equal(
+    clineApiKey({ CLINE_API_KEY: 'sk-cline-env' }, limitsConfigFromSettings({ clineApiKey: 'sk-cline-saved' }, { env: {} })),
+    'sk-cline-saved'
+  );
 });
 
 test('runtime config scopes Trae credentials and prefers saved settings over env', () => {
@@ -595,4 +614,18 @@ test('WorkBuddy managed field is private and owned by the managed service', () =
   assert.equal(Object.hasOwn(normalized, 'workbuddyManagedAccounts'), false);
   assert.ok(rendererOmittedAccountKeys().includes('workbuddyManagedAccounts'));
   assert.equal(require('../../src/electron/runtimeConfig').LIMIT_PROVIDER_SETTING_KEYS.workbuddy.includes('workbuddyManagedAccounts'), false);
+});
+
+
+test('Claude CLI fallback defaults on and toggling it reconfigures only Claude limits', () => {
+  assert.equal(limitsConfigFromSettings({}).claudeCliFallbackEnabled, true);
+  for (const enabled of [false, true]) {
+    const settings = { claudeCliFallbackEnabled: enabled };
+    assert.equal(limitsConfigFromSettings(settings).claudeCliFallbackEnabled, enabled);
+    const change = classifySettingsChange({ claudeCliFallbackEnabled: !enabled }, settings);
+    assert.equal(change.limitsReconfigure, true);
+    assert.deepEqual(change.limitScopes, [{ provider: 'claude', preserveReadings: true }]);
+    assert.equal(change.usageStructural, false);
+    assert.equal(change.modeStructural, false);
+  }
 });

@@ -104,17 +104,26 @@ test('a long detail total shrinks beside its compact reading instead of wrapping
   fitCardTotal({ querySelector: () => row });
   assert.equal(number.style.fontSize, '24px');
   number.style = {};
+  number.getBoundingClientRect = () => ({ width: 236 * 1.6 });
+  compact.getBoundingClientRect = () => ({ width: 47 * 1.6 });
+  fitCardTotal({ querySelector: () => row }, 1.6);
+  assert.equal(number.style.fontSize, '24px', 'text zoom must not change the logical fit');
+  number.getBoundingClientRect = () => ({ width: 236 });
+  compact.getBoundingClientRect = () => ({ width: 47 });
+  number.style = {};
   row.querySelector = (selector) => selector === 'strong' ? number : null;
   fitCardTotal({ querySelector: () => row });
   assert.equal(number.style.fontSize, undefined);
   assert.match(css, /\.edge-dock-total-row \{[^}]*white-space: nowrap/);
   const bubble = dock.slice(dock.indexOf('function renderBubble('));
-  assert.ok(bubble.indexOf('fitCardTotal(card);') < bubble.indexOf('const height = '));
+  const freshCard = bubble.slice(bubble.indexOf('const card = cell.kind'));
+  assert.ok(freshCard.indexOf('fitCardTotal(card);') >= 0);
+  assert.ok(freshCard.indexOf('fitCardTotal(card);') < freshCard.indexOf('const height = '));
 });
 
 test('a card commits after its reported height is clamped to the work area', () => {
   const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
-  const source = dock.slice(dock.indexOf('function renderBubble('), dock.indexOf('// ---- Wiring'));
+  const source = dock.slice(dock.indexOf('function renderBubble('), dock.indexOf('const bubbleSizeObserver ='));
   for (const kind of ['provider', 'stat']) {
     for (const { measured, maxCardHeight, expected } of [
       // Chromium at 175% scaling can measure a max-height: 851px card this way.
@@ -127,22 +136,26 @@ test('a card commits after its reported height is clamped to the work area', () 
       const card = { dataset: {}, style: {}, getBoundingClientRect: () => ({ height: measured }) };
       const renderBubble = Function('deps', `
         const { root, stagingLayer, providerCard, statCard, fitCardTotal,
-          clampBreakdownList, bridge, commitCard } = deps;
+          clampBreakdownList, reserveAccountHeight, bridge, commitCard } = deps;
+        let observedPluginCard = null;
+        const bubbleSizeObserver = null, pluginContent = null;
         ${source}
         return renderBubble;
       `)({
-        root: { dataset: {} },
+        root: { dataset: {}, style: { setProperty() {} }, classList: { toggle() {} } },
         stagingLayer: { replaceChildren() {} },
         providerCard: () => card,
         statCard: () => card,
         fitCardTotal() {},
         clampBreakdownList() {},
+        reserveAccountHeight() {},
         bridge: { reportBubbleSize: (cellId, height) => reports.push({ cellId, height }) },
         commitCard: (_card, cellId) => { visibleId = cellId; }
       });
       const cell = { id: `next-${kind}`, kind };
-      const payload = { side: 'right', cell, maxCardHeight };
+      const payload = { side: 'right', cell, maxCardHeight, zoom: 1.25, shape: { contentTarget: { y: 250, height: expected } } };
       renderBubble(payload);
+      assert.equal(card.style.transform, '', 'the reading follows its shared moving layer');
       assert.deepEqual(reports, [{ cellId: cell.id, height: expected }]);
       assert.equal(visibleId, 'previous-card', 'wait for the main process to place the new card');
       // Mirror the main process acknowledgement, including its height cap.
@@ -153,6 +166,48 @@ test('a card commits after its reported height is clamped to the work area', () 
       assert.equal(reports.length, 1, 'a placed card must not keep reporting its size');
     }
   }
+});
+
+test('a no-cell payload unmounts committed and staged plugin cards and removes their header actions', async () => {
+  const { Element } = require('../helpers/notchPanel');
+  const { createHost } = require('../../src/electron/renderer/pluginUi');
+  const document = { createElement: tag => new Element(tag, document) };
+  document.body = document.createElement('body'); document.head = document.createElement('head');
+  const root = document.createElement('main'), contentLayer = document.createElement('div'), stagingLayer = document.createElement('div');
+  document.body.append(root); root.append(contentLayer, stagingLayer);
+  let disposals = 0;
+  const pluginHost = createHost({ document, window: {}, bridge: {}, importModule: async () => ({ mount(_body, context) {
+    context.headerActions.append(document.createElement('button'));
+    return { dispose() { disposals++; } };
+  } }) });
+  const cards = [];
+  for (const layer of [contentLayer, stagingLayer]) {
+    const card = document.createElement('section'), actions = document.createElement('div'), body = document.createElement('div');
+    card.className = 'edge-dock-card edge-dock-card-plugin'; body.className = 'edge-dock-plugin-card';
+    card.append(actions, body); layer.append(card); cards.push({ card, actions, body });
+    await pluginHost.mount(body, { pluginId: 'fixture', ref: 'fixture/view', revision: 'one', entry: 'fixture' }, { headerActions: actions });
+    assert.equal(actions.children[0].children.length, 1);
+  }
+  const retained = [], unobserved = [];
+  const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+  const source = dock.slice(dock.indexOf('function renderBubble('), dock.indexOf('const bubbleSizeObserver ='));
+  const { renderBubble, observed } = Function('deps', `
+    const { root, contentLayer, stagingLayer, pluginHost, pluginContent, bubbleSizeObserver } = deps;
+    let observedPluginCard = deps.card;
+    const clearCardSwitch = () => {};
+    ${source}
+    return { renderBubble, observed: () => observedPluginCard };
+  `)({ root, contentLayer, stagingLayer, pluginHost, card: cards[1].card,
+    pluginContent: { retain: targets => retained.push(targets) },
+    bubbleSizeObserver: { unobserve: card => unobserved.push(card) } });
+  renderBubble({ side: 'right', cell: null });
+  assert.equal(contentLayer.children.length, 0); assert.equal(stagingLayer.children.length, 0);
+  assert.ok(cards.every(({ actions }) => actions.children.length === 0), 'header ownership must be released, not just detached');
+  assert.deepEqual(retained, [[]]); assert.deepEqual(unobserved, [cards[1].card]); assert.equal(observed(), null);
+  await new Promise(setImmediate); assert.equal(disposals, 2);
+  renderBubble({ side: 'right', cell: null }); await new Promise(setImmediate);
+  assert.equal(disposals, 2, 'repeated empty payloads do not dispose an old mount twice');
+  await pluginHost.dispose();
 });
 
 const {
@@ -191,7 +246,8 @@ const edgeDockPresentation = require('../../src/electron/renderer/edgeDock/prese
 // tests assert the same reading a surface would.
 const sessionLive = require('../../src/shared/sessionLive');
 const verticalDragSort = require('../../src/electron/renderer/verticalDragSort');
-const { matchProviderAccount } = require('../../src/shared/subscriptionDisplay');
+const { matchProviderAccount, needsRebinding } = require('../../src/shared/subscriptionDisplay');
+const { aggregateLimits } = require('../../src/shared/limits/core');
 const accountIdentity = require('../../src/electron/renderer/accountIdentity');
 const {
   buildEdgeDockCells,
@@ -324,7 +380,10 @@ test('the dock keeps the token total, adds headroom, and dots running rows inste
   // The meta line must compose through the shared helper — a projection that
   // still handed the card a flattened top model would pass the map assertions.
   assert.match(sessions, /sessionRowsApi\.sessionModelLabel\(session\)/);
-  assert.match(sessions, /if \(context\) meta\.append\(context\)/);
+  // The context gauge or cache badge comes from the one builder every compact
+  // session row shares, so the card cannot drift from the Home list or Notch.
+  assert.match(sessions, /sessionRowsApi\.sessionStatusNode\(document, session, \{ prefix: 'edge-dock-session'/);
+  assert.match(sessions, /if \(status\) meta\.append\(status\)/);
   // Running is a dot beside the name, not a recoloured title.
   assert.match(sessions, /nameNode\.append\(stateMark\(session, key, activityState\)\)/);
   assert.match(sessions, /el\('span', 'edge-dock-session-title', name\)/);
@@ -1026,6 +1085,47 @@ test('the sessions rate line carries no unreachable tooltip', () => {
 // `.edge-dock-session-list` - and that is the one which overflows there, because running
 // rows are never capped. Reading only the first selector meant every clock repaint of
 // that card reset it to the top, mid-read.
+test('provider detail reserves natural account height without exceeding half the card', () => {
+  const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+  const source = dock.slice(dock.indexOf('function reserveAccountHeight('), dock.indexOf('function fitCardTotal('));
+  const reserve = Function(`${source}; return reserveAccountHeight;`)();
+  for (const [natural, cap, expected] of [[75.15, 570, '76px'], [1200, 570, '285px'], [75.15, 228, '76px']]) {
+    const accounts = { style: { flexShrink: '' }, getBoundingClientRect: () => ({ height: accounts.style.flexShrink === '0' ? natural : 48 }) };
+    const card = { querySelector: selector => selector.endsWith('accounts') ? accounts : selector.endsWith('sessions') ? {} : null };
+    reserve(card, cap);
+    assert.equal(accounts.style.minHeight, expected);
+    assert.equal(accounts.style.flexShrink, '', 'keep the original shared scrolling/flex rule');
+  }
+  const accounts = { style: {}, getBoundingClientRect: () => { throw new Error('no need to measure without sessions'); } };
+  reserve({ querySelector: selector => selector.endsWith('accounts') ? accounts : null }, 570);
+  assert.equal(accounts.style.minHeight, undefined);
+});
+
+test('shared card repaint preserves both account and session scroll positions independently', () => {
+  const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+  const source = dock.slice(dock.indexOf('function commitCard('), dock.indexOf('// The period card'));
+  let previous;
+  const commit = Function('deps', `const {contentLayer, overflowText, document, cardResetAnimator, CARD_SCROLL_SELECTOR} = deps; const captureCardSwitch = () => null, animateCardSwitch = () => {}; ${source}; return commitCard;`)({
+    contentLayer: { querySelector: () => previous, replaceChildren() {} },
+    overflowText: { refresh() {}, preserveReading() {} },
+    cardResetAnimator: { capture() {}, animate() {} },
+    CARD_SCROLL_SELECTOR: '.edge-dock-accounts, .edge-dock-session-list', document: {}
+  });
+  const make = (id, positions) => {
+    const lists = Object.values(positions);
+    lists.forEach(list => { list.closest = () => null; });
+    return { dataset: { cellId: id }, querySelectorAll: () => lists };
+  };
+  previous = make('codex', { '.edge-dock-accounts': { scrollTop: 25 }, '.edge-dock-session-list': { scrollTop: 150 } });
+  const positions = { '.edge-dock-accounts': { scrollTop: 0 }, '.edge-dock-session-list': { scrollTop: 0 } };
+  commit(make('codex', positions), 'codex');
+  assert.equal(positions['.edge-dock-accounts'].scrollTop, 25);
+  assert.equal(positions['.edge-dock-session-list'].scrollTop, 150);
+  commit(make('claude', positions), 'claude');
+  assert.equal(positions['.edge-dock-accounts'].scrollTop, 0);
+  assert.equal(positions['.edge-dock-session-list'].scrollTop, 0);
+});
+
 test('a repainted card restores the scroll container it actually uses', () => {
   const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
   const css = readRendererFile(path.join('edgeDock', 'dock.css'));
@@ -1060,7 +1160,7 @@ test('the self-repaint cadence matches what each surface actually needs', () => 
   const period = dock.slice(dock.indexOf('const BUBBLE_REPAINT_MS'), dock.indexOf('function repaintSelf('));
   // The card keeps the 30s it always had.
   assert.match(period, /const BUBBLE_REPAINT_MS = 30_000;/);
-  assert.match(period, /const period = surface === 'bubble' \? BUBBLE_REPAINT_MS : 0;/);
+  assert.match(period, /notchRenderer\.needsClock\(\)/);
   // A rail only wakes for a sessions expiry, and reports 0 when there is none - which
   // is what leaves its timer unarmed rather than polling it.
   assert.match(period, /if \(!surfacesShowingSessions\(\)\) return 0;/);
@@ -1522,6 +1622,43 @@ function provider(id, overrides = {}) {
   };
 }
 
+test('edge dock keeps anonymous Muse accounts from every synced device', () => {
+  const museRow = (remainingPercent, updatedAt, overrides = {}) => provider('muse', {
+    accountKey: '',
+    updatedAt,
+    windows: [{ kind: 'session', label: 'Session', remainingPercent, resetsAt: '2026-09-17T12:00:00.000Z' }],
+    ...overrides
+  });
+  // Local raw row (41%) differs from its aggregate copy (40%) so the surviving
+  // subscription account proves the local copy won without being duplicated.
+  const devices = [
+    { deviceId: 'device-a', limits: { providers: [museRow(41, '2026-08-31T10:00:00.000Z')] } },
+    { deviceId: 'device-b', limits: { providers: [museRow(70, '2026-08-31T10:02:00.000Z')] } }
+  ];
+  const aggregate = aggregateLimits([
+    { deviceId: 'device-a', limits: { providers: [museRow(40, '2026-08-31T10:00:00.000Z')] } },
+    devices[1]
+  ], 0, Date.parse('2026-08-31T10:03:00.000Z'));
+  const stats = { devices, limits: aggregate };
+  const [cell] = buildEdgeDockCells(stats, {
+    items: [{ type: 'limit', provider: 'muse' }],
+    localDeviceId: 'device-a'
+  });
+
+  // The drawn card reads the raw aggregate: both devices display.
+  assert.equal(cell.accountCount, 2);
+  assert.deepEqual(cell.accounts.map((account) => account.record.sourceDeviceId), ['device-a', 'device-b']);
+  // The subscription universe dedupes local + aggregate per device: exactly
+  // A and B, local first, no local duplicate.
+  assert.deepEqual(cell.subscriptionAccounts.map((account) => account.sourceDeviceId), ['device-a', 'device-b']);
+  assert.equal(cell.subscriptionAccounts[0].windows[0].remainingPercent, 41);
+  assert.equal(devices[0].limits.providers[0].sourceDeviceId, undefined, 'stats are not mutated');
+
+  const anonymous = { provider: 'muse', binding: { accountKey: '', accountEmail: '', profileName: '' } };
+  assert.equal(matchProviderAccount(anonymous, cell.subscriptionAccounts), null);
+  assert.equal(needsRebinding(anonymous, cell.subscriptionAccounts), true);
+});
+
 test('automatic items follow the limits order and enabled set, capped at the default count', () => {
   const stats = {
     periods: { today: { totalTokens: 1200, costUsd: 2.5, clients: { codex: 200, claude: 1000 }, clientCosts: { claude: 2 } } },
@@ -1673,6 +1810,100 @@ test('the rail headline reports the pool that gates the account, not just the se
   assert.equal(cells6[0].windowKind, 'session');
 });
 
+test('a money-only account prints its balance on the rail without inventing a percentage', () => {
+  // A Sub2API or custom third-party account reports a balance and no quota total,
+  // so its credits window ships showMeter: false and the compact selection finds
+  // no pool. That left the rail cell an error printing `--` while the card, the
+  // tray and the Limits page all showed the balance.
+  //
+  // The money is the answer, so the cell prints it. The percentage is not: the
+  // meters exclude this window precisely because there is no denominator, which
+  // is what Claude's own collector says where it emits the window. Inferring one
+  // here would give the rail a figure no other surface agrees with, so the
+  // headline carries the window and no remaining.
+  const sub2api = provider('thirdparty', {
+    planLabel: 'Account',
+    windows: [{ kind: 'billing', metric: 'credits', label: 'Balance', remaining: 12.5, showMeter: false }],
+    balance: { amount: 12.5, currency: 'USD', monthSpend: 2.5 }
+  });
+  const [cell] = buildEdgeDockCells({ limits: { providers: [sub2api] } }, { limitProviders: 'thirdparty' });
+  assert.equal(cell.status, 'ok');
+  assert.equal(cell.windowKind, 'billing');
+  assert.deepEqual(cell.credits, { amount: 12.5, currency: 'USD' });
+  assert.equal(cell.remainingPercent, null);
+  assert.equal(cell.severityPercent, null);
+
+  // Claude's prepaid credits are the same shape and the case that matters most:
+  // an independently expiring tranche must not read as a percentage that only
+  // this one surface derived.
+  const claude = provider('claude', {
+    windows: [{ kind: 'billing', metric: 'credits', label: 'Balance', remaining: 30, currency: 'CREDITS', showMeter: false }],
+    balance: { amount: 30, currency: 'CREDITS' }
+  });
+  const [credits] = buildEdgeDockCells({ limits: { providers: [claude] } }, { limitProviders: 'claude' });
+  assert.equal(credits.status, 'ok');
+  assert.deepEqual(credits.credits, { amount: 30, currency: 'CREDITS' });
+  assert.equal(credits.remainingPercent, null);
+
+  // A metered credits window keeps the reading it already had: OpenRouter derives
+  // a real percentage from an explicit total, and that path is untouched.
+  const metered = provider('openrouter', {
+    windows: [{ kind: 'billing', metric: 'credits', label: 'Balance', remaining: 12.5, limit: 25, usedPercent: 50, showMeter: true }],
+    balance: { amount: 12.5, currency: 'USD' }
+  });
+  const [pct] = buildEdgeDockCells({ limits: { providers: [metered] } }, { limitProviders: 'openrouter' });
+  assert.equal(pct.remainingPercent, 50);
+  assert.deepEqual(pct.credits, { amount: 12.5, currency: 'USD' });
+
+  // Unlimited is the other money answer, and it has no amount to print.
+  const unlimited = provider('thirdparty', {
+    windows: [{ kind: 'billing', metric: 'credits', label: 'Balance', detail: 'Unlimited', showMeter: false }],
+    balance: { amount: null, currency: 'USD' }
+  });
+  const [blank] = buildEdgeDockCells({ limits: { providers: [unlimited] } }, { limitProviders: 'thirdparty' });
+  assert.equal(blank.credits, null);
+  assert.equal(blank.remainingPercent, null);
+
+  // A real quota pool always wins, in one account or across two: a money-only
+  // row cannot take the headline from a metered one, because it has no figure to
+  // lose the race on.
+  const mixed = provider('thirdparty', {
+    windows: [
+      { kind: 'billing', metric: 'credits', label: 'Balance', remaining: 12.5, showMeter: false },
+      { kind: 'weekly', label: 'Weekly', remainingPercent: 40 }
+    ],
+    balance: { amount: 12.5, currency: 'USD' }
+  });
+  const [quota] = buildEdgeDockCells({ limits: { providers: [mixed] } }, { limitProviders: 'thirdparty' });
+  assert.equal(quota.windowKind, 'weekly');
+  assert.equal(quota.remainingPercent, 40);
+  assert.equal(quota.credits, null);
+
+  const twoAccounts = provider('thirdparty', {
+    accountKey: 'sha256:money',
+    windows: [{ kind: 'billing', metric: 'credits', label: 'Balance', remaining: 12.5, showMeter: false }],
+    balance: { amount: 12.5, currency: 'USD' }
+  });
+  const [paired] = buildEdgeDockCells(
+    { limits: { providers: [twoAccounts, provider('thirdparty', { accountKey: 'sha256:quota', windows: [{ kind: 'weekly', label: 'Weekly', remainingPercent: 65 }] })] } },
+    { limitProviders: 'thirdparty' }
+  );
+  assert.equal(paired.windowKind, 'weekly');
+  assert.equal(paired.remainingPercent, 65);
+
+  // An account that failed to answer keeps its error cell; the fallback reads the
+  // collector's status, not just the presence of a window.
+  const failed = provider('thirdparty', {
+    status: 'unauthorized',
+    windows: [{ kind: 'billing', metric: 'credits', label: 'Balance', remaining: 12.5, showMeter: false }],
+    balance: { amount: 12.5, currency: 'USD' }
+  });
+  const [error] = buildEdgeDockCells({ limits: { providers: [failed] } }, { limitProviders: 'thirdparty' });
+  assert.equal(error.status, 'error');
+  assert.equal(error.credits, null);
+  assert.equal(error.remainingPercent, null);
+});
+
 test('a pinned rail window ignores automatic exhaustion and keeps its identity across refreshes', () => {
   const session = { kind: 'session', label: 'Session', remainingPercent: 85 };
   const weekly = { kind: 'weekly', label: 'Weekly', remainingPercent: 0 };
@@ -1820,7 +2051,8 @@ test('period cards expose an accessible tools and models switch', () => {
   assert.match(bubble, /stagingLayer\.replaceChildren\(card\);\s+fitCardTotal\(card\);\s+clampBreakdownList\(card\);/);
 });
 
-test('provider cards list the newest sessions of their own clients this month', () => {
+test('provider cards list the newest sessions of their own clients this month', (t) => {
+  t.mock.method(Date, 'now', () => Date.parse('2026-09-17T12:00:00Z'));
   const session = (client, id, lastUsedAt, extra = {}) => ({ client, sessionId: id, lastUsedAt, totalTokens: 10, models: { 'gpt-5': 10 }, ...extra });
   const stats = {
     periods: {
@@ -2701,6 +2933,24 @@ test('a larger dock that would not fit shrinks to the largest size that keeps fu
 });
 
 
+test('Notch detail can retain aggregate failures without changing rail visibility or hidden accounts', () => {
+  const healthy = { provider: 'codex', status: 'ok', accountKey: 'healthy', windows: [{ kind: 'session', remainingPercent: 80 }] };
+  const failures = ['unauthorized', 'rateLimited', 'sourceRateLimited', 'unavailable', 'error', 'notConfigured']
+    .map((status) => ({ provider: 'codex', status, accountKey: status, windows: [] }));
+  const localOnly = { provider: 'codex', status: 'unauthorized', accountKey: 'local-only', windows: [] };
+  const stats = { limits: { providers: [healthy, ...failures] }, devices: [{ deviceId: 'here', limits: { providers: [localOnly] } }] };
+  const options = { items: [{ type: 'limit', provider: 'codex', hiddenAccounts: ['error'] }], localDeviceId: 'here' };
+  const rail = buildEdgeDockCells(stats, options)[0];
+  const top = buildEdgeDockCells(stats, { ...options, includeUnavailableAccounts: true })[0];
+  assert.deepEqual(rail.accounts.map((a) => a.accountKey), ['healthy']);
+  assert.equal(top.accountCount, 6);
+  assert.deepEqual(top.accounts.map((a) => a.accountKey), ['healthy', 'unauthorized', 'rateLimited', 'sourceRateLimited', 'unavailable', 'notConfigured']);
+  assert.equal(top.headlineAccount, rail.headlineAccount);
+  assert.equal(top.remainingPercent, 80);
+  assert.ok(top.accounts.slice(1).every((a) => a.headlineRemaining === null));
+  assert.ok(top.subscriptionAccounts.some((a) => a.accountKey === 'local-only'), 'identity-only records still cannot become display rows');
+});
+
 test('provider card repaint preserves both account and session scroll and ignores nested families', () => {
   const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
   const start = dock.indexOf('function commitCard(');
@@ -2712,7 +2962,7 @@ test('provider card repaint preserves both account and session scroll and ignore
   const accounts = list(0), sessions = list(0), nested = list(0, true);
   const next = { dataset: { cellId: 'codex' }, querySelectorAll: () => [accounts, sessions, nested] };
   const commit = Function('contentLayer', 'overflowText', 'document', 'cardResetAnimator', 'CARD_SCROLL_SELECTOR',
-    `${body}\nreturn commitCard;`)(
+    `const captureCardSwitch = () => null, animateCardSwitch = () => {}; ${body}\nreturn commitCard;`)(
     { querySelector: () => previous, replaceChildren() {} },
     { refresh() {}, preserveReading() {} }, {}, { capture() {}, animate() {} }, '.scroll');
   commit(next, 'codex');
@@ -2765,7 +3015,7 @@ test('an active Grok Bot group survives recent caps and running-only selection a
   const sessions = {
     'codex:quiet': { client: 'codex', sessionId: 'quiet', totalTokens: 1, turnEnded: true,
       lastUsedAt: new Date(now - 1000).toISOString() },
-    'cursor:bot-a': { client: 'cursor', sessionId: 'bot-a', grokBotSession: true,
+    'cursor:bot-a': { client: 'cursor', sessionId: 'bot-a', grokBotSession: true, turnEnded: false,
       totalTokens: 10, costUsd: 1, models: { 'grok-bot-test': 10 },
       lastUsedAt: new Date(now - 8 * 60_000).toISOString() },
     'cursor:bot-b': { client: 'cursor', sessionId: 'bot-b', grokBotSession: true, turnEnded: true,
@@ -2782,6 +3032,7 @@ test('an active Grok Bot group survives recent caps and running-only selection a
   assert.equal(dock.sessions.length, 1);
   assert.equal(dock.sessions[0].sessionGroup, 'cursor-grok-bot');
   assert.equal(dock.sessions[0].totalTokens, 30);
+  assert.equal(edgeDockPresentation.sessionActivityState(dock.sessions[0], now + 1000), 'running');
 });
 
 for (const shape of ['independent', 'aliases', 'cross-client child', 'Grok Bot']) {
@@ -2868,5 +3119,448 @@ test('expired idle leases restore transcript running and waiting before Home and
     clock = start;
     const [provider] = buildEdgeDockCells(stats, { items: [{ type: 'limit', provider: 'codex' }] });
     assert.deepEqual(provider.sessions.map(row => row.sessionId), ['old', 'new']);
+  }
+});
+
+test('full plugin cards expose header actions beside identity while compact rail mounts stay minimal', () => {
+  const source = readRendererFile(path.join('edgeDock', 'dock.js'));
+  const { Element } = require('../helpers/notchPanel');
+  const document = {};
+  const el = (tag, className, value) => {
+    const node = new Element(tag, document); node.className = className || '';
+    if (value !== undefined) node.textContent = value;
+    return node;
+  };
+  const mounts = [];
+  const pluginHost = {
+    state: () => ({ title: 'Routes', pluginName: 'Author' }),
+    mount(...args) { mounts.push(args); }
+  };
+  const cardSource = source.slice(source.indexOf('function pluginCard('), source.indexOf('const codexAccountControl =')).trim();
+  const card = Function('el', 'pluginHost', `return (${cardSource})`)(el, pluginHost)({ ref: 'demo/routes' });
+  const header = card.querySelector('.edge-dock-card-head');
+  const slot = mounts[0][3].headerActions;
+  assert.equal(slot.parentNode, header);
+  assert.equal(header.querySelector('.edge-dock-stat-caption').textContent, 'Routes');
+  assert.equal(header.querySelector('.edge-dock-plugin-owner').textContent, 'Author');
+  assert.equal(mounts[0][0], card.querySelector('.edge-dock-plugin-card'));
+  assert.equal(mounts[0][3].variant, 'full');
+  const railSource = source.slice(source.indexOf('function pluginCellNode('), source.indexOf('function pluginCard(')).trim();
+  Function('el', 'pluginHost', 'pluginCellLabel', `return (${railSource})`)(el, pluginHost, () => 'Routes')({ ref: 'demo/routes' });
+  assert.deepEqual(mounts[1][3], { variant: 'compact' });
+});
+
+test('free drops retain the grab point on either axis and snap only near an edge', () => {
+  const area = { x: -1200, y: 40, width: 1200, height: 860 };
+  const drop = (x) => edgeDockPlacementForDrop({ workArea: area, pointer: { x, y: 400 }, grabOffsetX: 20, grabOffsetY: 30, cellCount: 3 });
+  const free = drop(-600);
+  const bounds = edgeDockRailBounds({ workArea: area, ...free, cellCount: 3 });
+  assert.equal(bounds.x, -620);
+  assert.equal(bounds.y, 370);
+  assert.equal(drop(-1180).floatingX, null);
+  assert.equal(drop(-20).floatingX, null);
+  const resized = edgeDockRailBounds({ workArea: { x: 100, y: 0, width: 700, height: 500 }, ...free, cellCount: 3 });
+  assert.ok(resized.x >= 108 && resized.x + resized.width <= 792);
+  assert.ok(resized.y >= 8 && resized.y + resized.height <= 492);
+});
+
+test('floating placement rejects malformed persisted coordinates and closes its complete outline', () => {
+  const { normalizeEdgeDockFloatingX } = require('../../src/electron/edgeDock/geometry');
+  for (const input of [undefined, null, '', '0.5', NaN, Infinity, {}, false]) assert.equal(normalizeEdgeDockFloatingX(input), null);
+  assert.equal(normalizeEdgeDockFloatingX(0), 0);
+  assert.equal(normalizeEdgeDockFloatingX(2), 1);
+  const options = { width: 64, height: 300, floating: true, shoulder: 28, radius: 20 };
+  const commands = railCommands(options);
+  assert.deepEqual(commands, railCommands({ ...options, open: true }));
+  assert.deepEqual(commands.at(-1), ['Z']);
+  assert.deepEqual(commands[0], ['M', 64, 60]);
+  const points = toPolygons(commands)[0];
+  assert.equal(Math.min(...points.map(point => point[1])), 28);
+  assert.equal(Math.max(...points.map(point => point[1])), 272);
+});
+
+for (const platform of ['win32', 'darwin']) {
+  test(`${platform} rail schedules drag frames only on Windows and stops after release or native completion`, () => {
+    const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+    const source = dock.slice(dock.indexOf('let gesture = null;'), dock.indexOf('function indexFromTarget('));
+    const handlers = new Map();
+    const rail = { addEventListener: (name, fn) => handlers.set(name, fn), setPointerCapture() {}, classList: { add() {}, remove() {} } };
+    const frames = [], starts = [], callbacks = [];
+    let acknowledge;
+    Function('bridge', 'railNode', 'indexFromTarget', 'DRAG_THRESHOLD_PX', 'state', 'requestAnimationFrame', `${source}; bindRailGestures(railNode);`)(
+      {
+        dragStart: (...args) => starts.push(args), dragFrame: id => frames.push(id), dragEnd() {},
+        dragCaptureLost() {}, onDragEnded: fn => { acknowledge = fn; }
+      }, rail, () => 0, 5, { payload: { platform } }, fn => callbacks.push(fn));
+    const event = { button: 0, buttons: 1, pointerId: 1, screenX: 10, screenY: 20, clientX: 25, clientY: 40 };
+    const start = () => {
+      handlers.get('pointerdown')(event);
+      assert.equal(callbacks.length, 0, 'a click does not start animation frames');
+      handlers.get('pointermove')({ ...event, screenX: 100 });
+    };
+    const paint = () => callbacks.shift()?.();
+    start();
+    paint();
+    assert.deepEqual(frames, platform === 'win32' ? [starts[0][2]] : []);
+    handlers.get('lostpointercapture')(event);
+    paint();
+    assert.equal(frames.length, platform === 'win32' ? 2 : 0, 'capture loss keeps frames running until main confirms release');
+    acknowledge({ gestureId: starts[0][2] });
+    paint();
+    assert.equal(callbacks.length, 0, 'native completion stops the loop');
+    start();
+    handlers.get('pointerup')({ ...event, type: 'pointerup' });
+    paint();
+    assert.equal(callbacks.length, 0, 'renderer release stops the loop');
+    assert.equal(frames.length, platform === 'win32' ? 2 : 0, 'no stale frame crosses into another gesture');
+  });
+}
+
+for (const platform of ['win32', 'darwin']) {
+  test(`${platform} card transitions request renderer frames only on Windows`, () => {
+    const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+    const source = dock.slice(dock.indexOf('let cardMotionId = null;'), dock.indexOf('bridge.onDragEnded'));
+    const frames = [], callbacks = [];
+    let motion;
+    Function('bridge', 'state', 'requestAnimationFrame', `${source};`)(
+      { cardFrame: id => frames.push(id), onCardMotion: fn => { motion = fn; } },
+      { payload: { platform } },
+      fn => callbacks.push(fn)
+    );
+    motion({ motionId: 42, active: true });
+    assert.equal(callbacks.length, platform === 'win32' ? 1 : 0, 'only Windows starts a paint loop');
+    callbacks.shift()?.();
+    assert.deepEqual(frames, platform === 'win32' ? [42] : []);
+    motion({ motionId: 42, active: false });
+    callbacks.shift()?.();
+    assert.deepEqual(frames, platform === 'win32' ? [42] : []);
+    assert.equal(callbacks.length, 0, 'the native completion frame stops the loop');
+
+    motion({ motionId: 42, active: true });
+    motion({ motionId: 42, active: false });
+    motion({ motionId: 43, active: true });
+    assert.equal(callbacks.length, platform === 'win32' ? 1 : 0, 'retargeting keeps the pending paint loop');
+    callbacks.shift()?.();
+    assert.deepEqual(frames, platform === 'win32' ? [42, 43] : []);
+    assert.equal(callbacks.length, platform === 'win32' ? 1 : 0, 'the pending callback uses the new motion');
+    motion({ motionId: 43, active: false });
+    callbacks.shift()?.();
+    assert.equal(callbacks.length, 0, 'the retargeted native completion frame stops the loop');
+  });
+}
+
+for (const eventType of ['lostpointercapture', 'pointercancel']) {
+  test(`${eventType} while moving the rail does not end the held native drag`, () => {
+    const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+    const source = dock.slice(dock.indexOf('let gesture = null;'), dock.indexOf('function indexFromTarget('));
+    const handlers = new Map();
+    const rail = { addEventListener: (name, fn) => handlers.set(name, fn), setPointerCapture() {}, classList: { add() {}, remove() {} } };
+    const starts = [], ends = [], captureLosses = [];
+    let acknowledge;
+    const bind = Function('bridge', 'railNode', 'indexFromTarget', 'DRAG_THRESHOLD_PX', 'state', `${source}; return bindRailGestures;`)(
+      { dragStart: (...args) => starts.push(args), dragEnd: () => ends.push(true), dragCaptureLost: id => captureLosses.push(id), onDragEnded: fn => { acknowledge = fn; } }, rail, () => 0, 5, { payload: { platform: 'darwin' } });
+    bind(rail);
+    const event = { button: 0, pointerId: 1, screenX: 10, screenY: 20, clientX: 25, clientY: 40 };
+    handlers.get('pointerdown')(event);
+    handlers.get(eventType)({ ...event, type: eventType });
+    handlers.get('pointermove')({ ...event, screenX: 100 });
+    assert.equal(starts.length, 0, 'an interrupted click cannot leave a pending drag');
+    handlers.get('pointerdown')(event);
+    handlers.get('pointermove')({ ...event, screenX: 100 });
+    assert.deepEqual(starts[0].slice(0, 2), [40, 25]);
+    handlers.get(eventType)({ ...event, type: eventType });
+    assert.equal(ends.length, 0, 'capture loss is not a release');
+    assert.deepEqual(captureLosses, [starts[0][2]], 'main receives the matching lost-capture gesture');
+    handlers.get('pointerdown')({ ...event, clientX: 8, clientY: 12 });
+    handlers.get('pointermove')({ ...event, buttons: 1, screenX: 200 });
+    assert.equal(starts.length, 1, 'a new press before native completion cannot replace the active drag');
+    handlers.get('pointerdown')({ ...event, pointerId: 2 });
+    handlers.get('pointermove')({ ...event, pointerId: 2, buttons: 1, screenX: 200 });
+    assert.equal(starts.length, 1, 'another pointer cannot replace the active drag either');
+    handlers.get(eventType)({ ...event, pointerId: 2, type: eventType });
+    assert.equal(captureLosses.length, 1, 'another pointer cannot report capture loss for this drag');
+    acknowledge({ gestureId: starts[0][2] + 1 });
+    handlers.get('pointerup')({ ...event, type: 'pointerup' });
+    assert.equal(ends.length, 1, 'a stale acknowledgement cannot clear this drag');
+    handlers.get('pointerdown')(event);
+    handlers.get('pointermove')({ ...event, screenX: 100 });
+    acknowledge({ gestureId: starts[1][2] });
+    handlers.get('pointerup')({ ...event, type: 'pointerup' });
+    assert.equal(ends.length, 1, 'native completion clears the renderer gesture');
+    handlers.get('pointerdown')(event);
+    handlers.get('pointermove')({ ...event, screenX: 100, buttons: 1 });
+    handlers.get(eventType)({ ...event, type: eventType });
+    handlers.get('pointermove')({ ...event, pointerId: 2, buttons: 0 });
+    assert.equal(ends.length, 1, 'another pointer cannot finish this drag');
+    handlers.get('pointermove')({ ...event, buttons: 0 });
+    assert.equal(ends.length, 2, 'an unpressed move finishes even without native button-state support');
+  });
+}
+
+test('macOS rail forwards pointer reports using the existing bridge without affecting Windows', () => {
+  const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+  const start = dock.indexOf('// On macOS the handle');
+  const source = dock.slice(start, dock.indexOf('// The notch window', start));
+  for (const platform of ['darwin', 'win32']) {
+    const handlers = new Map();
+    const reports = [];
+    const document = { addEventListener: (name, fn) => handlers.set(name, fn), documentElement: { addEventListener: (name, fn) => handlers.set(name, fn) } };
+    Function('surface', 'state', 'document', 'bridge', source)('rail', { payload: { platform } }, document, { pointer: () => reports.push(true) });
+    handlers.get('mousemove')?.();
+    handlers.get('mouseleave')?.();
+    assert.equal(reports.length, platform === 'darwin' ? 2 : 0);
+  }
+});
+
+
+test('bubble silhouette moves content and clips it in the same local coordinates', () => {
+  const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+  const source = dock.slice(dock.indexOf('function updateShape('), dock.indexOf('// ---- Peek'));
+  const style = {}, nodes = [];
+  const shapeLayer = { dataset: {}, setAttribute() {}, replaceChildren() {}, append() {} };
+  const document = { createElementNS(_namespace, name) {
+    const node = { name, attributes: {}, setAttribute(key, value) { this.attributes[key] = value; }, append() {} };
+    nodes.push(node);
+    return node;
+  } };
+  const update = Function('surface', 'contentLayer', 'shapeLayer', 'document', 'SVG_NS', `${source}; return updateShape;`)(
+    'bubble', { style }, shapeLayer, document, 'svg');
+  update({ zoom: 1.25, shape: { key: 'frame-a', width: 365, height: 900, d: 'M 0 100 Z', contentBounds: { y: 100, height: 250 } } });
+  assert.equal(style.transform, 'translateY(80px)');
+  assert.equal(style.height, '');
+  assert.equal(style.clipPath, 'url(#edge-dock-card-clip)');
+  assert.equal(nodes.find(node => node.name === 'clipPath').attributes.clipPathUnits, 'userSpaceOnUse');
+  assert.equal(nodes.find(node => node.name === 'path').attributes.transform, 'translate(0 -80) scale(0.8)');
+  assert.equal(nodes.find(node => node.name === 'path').attributes.d, 'M 0 100 Z');
+  nodes.length = 0;
+  update({ zoom: 1.25, shape: { key: 'frame-b', width: 365, height: 900, d: 'M 0 150 Z', contentBounds: { y: 150, height: 300 } } });
+  assert.equal(style.transform, 'translateY(120px)', 'the complete reading follows the painted frame');
+  assert.equal(style.height, '');
+  assert.equal(nodes.find(node => node.name === 'path').attributes.d, 'M 0 150 Z');
+});
+
+test('shape-only frames preserve the reading destination until its full payload arrives', () => {
+  const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+  const start = dock.indexOf('bridge.onShapeFrame?.(');
+  const source = dock.slice(start, dock.indexOf('// A repaint that no push triggers', start));
+  const first = { y: 120, height: 280 }, next = { y: 250, height: 164 };
+  const state = { payload: { cell: { id: 'claude' }, shape: { contentTarget: first } } };
+  let receive, painted;
+  Function('bridge', 'surface', 'state', 'root', 'updateShape', source)(
+    { onShapeFrame: callback => { receive = callback; } }, 'bubble', state, { dataset: {} }, payload => { painted = payload; });
+  receive({ side: 'left', shape: { key: 'moving', contentBounds: { y: 155, height: 249 }, contentTarget: next } });
+  assert.equal(painted.shape.key, 'moving');
+  assert.equal(state.payload.shape.contentTarget, first, 'an intervening self-repaint must keep the old reading at its own destination');
+  state.payload = { cell: { id: 'codex' }, shape: { contentTarget: next } };
+  receive({ side: 'left', shape: { key: 'later', contentBounds: { y: 187, height: 221 }, contentTarget: first } });
+  assert.equal(state.payload.shape.contentTarget, next);
+});
+
+test('whole-card transitions retain repaint progress and clean up interrupted outgoing content', async () => {
+  const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+  const source = dock.slice(dock.indexOf('let cardSwitchMotion ='), dock.indexOf('function commitCard('));
+  let reduced = false;
+  const document = { visibilityState: 'visible' };
+  const ghosts = new Set();
+  function node(opacity = '1', scroll = 0, top = 0) {
+    const list = { scrollTop: scroll };
+    const value = { style: {}, opacity, attributes: {}, animations: [],
+      querySelectorAll: selector => selector === '.scroll' ? [list] : [],
+      cloneNode: () => node(opacity, 0, top),
+      getBoundingClientRect: () => ({ top, bottom: top + 120 }),
+      setAttribute(name, text) { this.attributes[name] = text; },
+      removeAttribute(name) { delete this.attributes[name]; },
+      remove() { ghosts.delete(this); this.removed = true; },
+      animate(frames, timing) {
+        let resolve, reject;
+        const finished = new Promise((yes, no) => { resolve = yes; reject = no; });
+        // Browsers create the finished promise lazily; observe this eager fake.
+        finished.catch(() => {});
+        const animation = { frames, timing, currentTime: 0, finished,
+          cancel() { this.cancelled = true; reject(new Error('cancelled')); },
+          finish() { resolve(); } };
+        this.animations.push(animation);
+        return animation;
+      }
+    };
+    return value;
+  }
+  const api = Function('surface', 'document', 'prefersReducedMotion', 'getComputedStyle', 'contentLayer', 'CARD_SCROLL_SELECTOR',
+    `${source}; return { captureCardSwitch, animateCardSwitch, clearCardSwitch };`)(
+    'bubble', document, () => reduced, card => ({ opacity: card.opacity }), { append: ghost => ghosts.add(ghost) }, '.scroll');
+  const first = node('1', 37), next = node();
+  const motion = api.captureCardSwitch(first, false, next);
+  api.animateCardSwitch(next, motion);
+  assert.equal(ghosts.size, 1);
+  assert.equal(motion.ghost.inert, true);
+  assert.equal(motion.ghost.attributes['aria-hidden'], 'true');
+  assert.equal(motion.ghost.style.pointerEvents, 'none');
+  assert.equal(motion.ghost.querySelectorAll('.scroll')[0].scrollTop, 37);
+  assert.deepEqual(next.animations[0].frames, [{ opacity: 0 }, { opacity: 1 }]);
+  assert.equal(next.animations[0].timing.duration, 160);
+  assert.equal(next.animations[0].timing.delay, undefined, 'both readings start together');
+  const originalIncoming = motion.incoming, outgoing = motion.outgoing;
+  originalIncoming.currentTime = 80;
+  const repaint = api.captureCardSwitch(next, true, node());
+  api.animateCardSwitch(node(), repaint);
+  assert.equal(repaint, motion);
+  assert.equal(repaint.incoming.currentTime, 80, 'a live repaint does not restart or snap the fade');
+  assert.equal(repaint.outgoing, outgoing, 'the outgoing content keeps its original deadline');
+  assert.equal(originalIncoming.cancelled, true);
+  outgoing.finish();
+  await Promise.resolve();
+  const rapid = api.captureCardSwitch(node('0.4'), false, node());
+  api.animateCardSwitch(node(), rapid);
+  await Promise.resolve();
+  assert.equal(ghosts.size, 1, 'an older completion cannot remove the latest transition');
+  assert.equal(rapid.ghost.removed, undefined);
+  assert.equal(rapid.outgoing.frames[0].opacity, '0.4', 'a rapid switch starts from the painted opacity');
+  rapid.outgoing.finish();
+  await Promise.resolve();
+  assert.equal(ghosts.size, 0);
+  assert.equal(rapid.incoming.cancelled, true, 'finishing releases the animation effect');
+  reduced = true;
+  assert.equal(api.captureCardSwitch(first, false, next), null);
+  reduced = false;
+  document.visibilityState = 'hidden';
+  assert.equal(api.captureCardSwitch(first, false, next), null, 'reopening starts without stale outgoing content');
+  document.visibilityState = 'visible';
+  for (const top of [504, -504, 120, -120]) {
+    const pending = api.captureCardSwitch(first, false, next);
+    api.animateCardSwitch(next, pending);
+    assert.equal(api.captureCardSwitch(next, false, node('1', 0, top)), null, 'interrupted fades hand off directly regardless of reading distance');
+    assert.equal(ghosts.size, 0, 'a direct switch also clears any interrupted outgoing copy');
+    assert.equal(pending.incoming.cancelled, true);
+  }
+  for (const elapsed of [0, 16, 40]) {
+    const incoming = node();
+    const pending = api.captureCardSwitch(first, false, incoming);
+    api.animateCardSwitch(incoming, pending);
+    pending.incoming.currentTime = elapsed;
+    pending.outgoing.currentTime = elapsed;
+    incoming.opacity = elapsed === 0 ? '0' : elapsed === 16 ? '0.0197225' : '0.129162';
+    const latest = node();
+    const interrupted = api.captureCardSwitch(incoming, false, latest);
+    assert.equal(interrupted, null, 'rapid selection displays the latest reading directly, without another fade from zero');
+    api.animateCardSwitch(latest, interrupted);
+    assert.equal(latest.animations.length, 0);
+    assert.equal(ghosts.size, 0, 'interruption leaves no outgoing copy');
+    assert.equal(pending.incoming.cancelled, true);
+    assert.equal(pending.outgoing.cancelled, true);
+    await Promise.resolve();
+  }
+});
+
+for (const kind of ['provider', 'stat']) {
+  for (const acknowledgeImmediately of [false, true]) {
+    test(`switching plugin → ${kind} → plugin during the fade commits the live card (${acknowledgeImmediately ? 'placed' : 'awaiting size'})`, async () => {
+      const { Element } = require('../helpers/notchPanel');
+      class CardElement extends Element {
+        querySelectorAll(selector) {
+          const exclude = selector.match(/^(.*):not\(\[([^=]+)="([^"]+)"\]\)$/);
+          if (exclude) return super.querySelectorAll(exclude[1]).filter(node => node.getAttribute(exclude[2]) !== exclude[3]);
+          return super.querySelectorAll(selector);
+        }
+        cloneNode(deep) {
+          const clone = new CardElement(this.tagName, this.ownerDocument);
+          clone.className = this.className;
+          Object.assign(clone.dataset, this.dataset);
+          Object.assign(clone.attributes, this.attributes);
+          Object.assign(clone.style, this.style);
+          clone.value = this.value;
+          if (deep) clone.append(...this.children.map(child => child.cloneNode(true)));
+          return clone;
+        }
+        getBoundingClientRect() { return { height: this.classList.contains('edge-dock-card-plugin') ? 180 : 240 }; }
+        animate() {
+          let finish, cancel;
+          const finished = new Promise((resolve, reject) => { finish = resolve; cancel = () => reject(new Error('cancelled')); });
+          finished.catch(() => {});
+          const animation = { finished, finish, cancel, currentTime: 0 };
+          (this.animations ||= []).push(animation);
+          return animation;
+        }
+      }
+      const document = { visibilityState: 'visible', createElement: tag => new CardElement(tag, document) };
+      const el = (tag, className, text) => {
+        const node = document.createElement(tag); node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      };
+      const root = el('main', ''), contentLayer = el('div', ''), stagingLayer = el('div', '');
+      root.append(contentLayer, stagingLayer);
+      const reports = [];
+      let mounts = 0;
+      const dock = readRendererFile(path.join('edgeDock', 'dock.js'));
+      const source = dock.slice(dock.indexOf('let cardSwitchMotion ='), dock.indexOf('const bubbleSizeObserver ='));
+      const pluginSource = dock.slice(dock.indexOf('function pluginCard('), dock.indexOf('const codexAccountControl ='));
+      const { renderBubble } = Function('deps', `
+        const { document, el, root, contentLayer, stagingLayer, bridge, pluginHost } = deps;
+        const surface = 'bubble', CARD_SCROLL_SELECTOR = '.edge-dock-accounts, .edge-dock-session-list', BREAKDOWN_VISIBLE_ROWS = 6;
+        const prefersReducedMotion = () => false, getComputedStyle = () => ({ opacity: '1' });
+        const overflowText = { refresh() {}, preserveReading() {} };
+        const cardResetAnimator = { capture() {}, animate() {} };
+        const pluginContent = null, bubbleSizeObserver = null;
+        let observedPluginCard = null;
+        const providerCard = cell => el('section', 'edge-dock-card', cell.id), statCard = providerCard;
+        ${pluginSource}
+        ${source}
+        return { renderBubble };
+      `)({ document, el, root, contentLayer, stagingLayer,
+        bridge: { reportBubbleSize: (id, height) => reports.push({ id, height }) },
+        pluginHost: { state: () => ({ title: 'Plugin reading' }), mount: body => { mounts++; body.textContent = 'Live plugin content'; } }
+      });
+      const plugin = { id: 'plugin', kind: 'plugin', ref: 'fixture/view' };
+      const other = { id: kind, kind };
+      const paint = (cell, placed) => renderBubble({ side: 'right', cell, placed });
+      paint(plugin, { cellId: plugin.id, height: 180 });
+      const original = contentLayer.children[0];
+      paint(other, { cellId: other.id, height: 240 });
+      const ghost = contentLayer.children[1];
+      assert.equal(ghost.dataset.cellId, plugin.id);
+      assert.equal(ghost.classList.contains('edge-dock-card-plugin'), true);
+      assert.equal(ghost.getAttribute('aria-hidden'), 'true');
+      assert.equal(ghost.inert, true);
+
+      paint(plugin, acknowledgeImmediately ? { cellId: plugin.id, height: 180 } : { cellId: other.id, height: 240 });
+      if (!acknowledgeImmediately) {
+        assert.equal(contentLayer.children[0].dataset.cellId, other.id, 'keep the placed card until size confirmation');
+        assert.equal(stagingLayer.children[0]?.dataset.cellId, plugin.id, 'build a real plugin card, not retain its fading clone');
+        assert.deepEqual(reports, [{ id: plugin.id, height: 180 }]);
+        paint(plugin, { cellId: plugin.id, height: 180 });
+      }
+      const active = contentLayer.children[0];
+      assert.equal(active.dataset.cellId, plugin.id, 'the selected plugin must replace the provider/stat card');
+      assert.notEqual(active, ghost);
+      assert.notEqual(active, original);
+      assert.equal(active.inert, undefined);
+      assert.ok(active.textContent.includes('Live plugin content'));
+      const mounted = mounts;
+      paint(plugin, { cellId: plugin.id, height: 180 });
+      assert.equal(contentLayer.children[0], active, 'normal live-plugin retention still preserves its mount');
+      assert.equal(mounts, mounted);
+      await Promise.resolve();
+      assert.deepEqual(contentLayer.children, [active], 'rapid selection cancels the outgoing copy without removing the live plugin');
+    });
+  }
+}
+
+test('detail tooltip flipping uses the painted card top in CSS pixels', () => {
+  const source = fs.readFileSync(path.join(rendererDir, 'limits/windowsView.js'), 'utf8');
+  const body = source.slice(source.indexOf('function attachLimitDetailTooltip('), source.indexOf('// Entries are rows'));
+  for (const zoom of [1, 1.25]) {
+    for (const cardY of [0, 400]) {
+      for (const triggerY of [50, 150]) {
+        const events = {}, flips = [];
+        const attach = Function('deps', 'tooltipHost', 'positionCenteredDetailTooltip', `let tooltipAnchorSeq = 0; ${body}; return attachLimitDetailTooltip;`)(
+          { tooltipTop: () => cardY / zoom }, { markOpened() {}, release() {} }, () => {});
+        const wrap = { style: { setProperty() {} }, classList: { add() {} }, isConnected: true,
+          getBoundingClientRect: () => ({ top: (cardY + triggerY) / zoom }), addEventListener: (name, fn) => { events[name] = fn; } };
+        const tooltip = { style: { setProperty() {} }, setAttribute() {}, childElementCount: 1, offsetHeight: 120 / zoom,
+          showPopover() {}, classList: { toggle: (_name, below) => flips.push(below) } };
+        attach(wrap, tooltip); events.pointerenter();
+        assert.deepEqual(flips, [triggerY < 120 + 8 * zoom]);
+      }
+    }
   }
 });

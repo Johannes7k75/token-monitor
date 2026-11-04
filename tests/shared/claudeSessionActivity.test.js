@@ -12,6 +12,7 @@ const usage = require('../../src/shared/usage');
 const archive = require('../../src/shared/usage/sessionUsageArchive');
 const presentation = require('../../src/electron/renderer/edgeDock/presentation');
 const sessionRows = require('../../src/electron/renderer/sessionRows');
+const { claudeProbeDir: defaultProbeDir, prepareClaudeProbeDir } = require('../../src/shared/providers/claude/probe');
 
 const now = Date.parse('2026-10-08T12:00:00Z');
 const start = now - 60_000;
@@ -98,6 +99,99 @@ test('registry recognizes explicit states and publishes only a sanitized observa
   }
   fs.writeFileSync(path.join(f.root, '1234.key'), 'not a JSON record');
   assert.equal((await f.read()).size, 1);
+});
+
+test('registry excludes Token Monitor probe cwd from readings and pre-token rows', async t => {
+  const f = fixture(t);
+  t.mock.method(os, 'userInfo', () => ({ homedir: f.home }));
+  const probe = path.join(f.home, 'probe');
+  const alias = path.join(f.home, 'probe-alias');
+  fs.mkdirSync(probe, { mode: 0o700 });
+  fs.symlinkSync(probe, alias, 'junction');
+  const canonical = fs.realpathSync(probe);
+  const missing = path.join(f.home, 'missing-probe');
+  for (const platform of ['darwin', 'win32']) {
+    const cases = [
+      [undefined, path.join(os.tmpdir(), 'token-monitor-claude-probe')],
+      [undefined, defaultProbeDir({ ...f.options, platform })]
+    ];
+    if (platform !== 'win32') cases.push(
+      [probe, path.join(os.tmpdir(), 'token-monitor-claude-probe')],
+      [probe, probe], [canonical, alias], [missing, missing]
+    );
+    for (const [claudeProbeDir, cwd] of cases) {
+      const options = { ...f.options, platform, claudeProbeDir };
+      f.write({ sessionId: 'probe-session', pidDomain: platform, cwd });
+      // The registry name is deliberately identical; only cwd identifies ours.
+      f.write({ sessionId: 'real-session', pidDomain: platform, cwd: `${probe}-project` }, 2345);
+      const readings = await activity.readSessionActivity(null, options);
+      assert.equal(readings.has('probe-session'), false, `${platform}: ${cwd}`);
+      assert.equal(readings.get('real-session').state, 'waiting');
+      const observed = await activity.readSummaryActivity({}, options);
+      assert.equal(observed.readings.has('probe-session'), false);
+      assert.deepEqual(Object.keys(observed.sessions), ['claude:real-session']);
+      assert.equal(observed.sessions['claude:real-session'].tokenDataUnavailable, true);
+    }
+  }
+});
+
+test('a linked current probe cannot hide real project activity or pre-token rows', async t => {
+  for (const platform of ['darwin', 'win32']) await t.test(platform, async t => {
+    const f = fixture(t);
+    t.mock.method(os, 'userInfo', () => ({ homedir: f.home }));
+    const options = { ...f.options, platform };
+    const probe = defaultProbeDir(options);
+    const project = path.join(f.home, 'real-project');
+    fs.mkdirSync(probe, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(project, { mode: 0o700 });
+    f.write({ sessionId: 'real-session', pidDomain: platform, cwd: project });
+    assert.equal((await activity.readSessionActivity(null, options)).get('real-session').state, 'waiting');
+    fs.rmdirSync(probe);
+    fs.symlinkSync(project, probe, 'junction');
+    const observed = await activity.readSummaryActivity({}, options);
+    assert.equal(observed.readings.get('real-session')?.state, 'waiting');
+    assert.equal(observed.sessions['claude:real-session']?.tokenDataUnavailable, true);
+    assert.equal(fs.lstatSync(probe).isSymbolicLink(), true);
+  });
+});
+
+test('a redirected POSIX parent cannot hide a nonprivate real probe-named project', { skip: process.platform === 'win32' }, async t => {
+  const f = fixture(t);
+  const projects = path.join(f.home, 'projects');
+  const project = path.join(projects, 'claude-probe');
+  fs.mkdirSync(project, { recursive: true }); fs.chmodSync(project, 0o755);
+  fs.writeFileSync(path.join(project, 'keep'), 'untouched');
+  const alias = path.join(f.home, 'redirected');
+  fs.symlinkSync(projects, alias);
+  const probe = path.join(alias, 'claude-probe');
+  await assert.rejects(prepareClaudeProbeDir({ claudeProbeDir: probe }), /unavailable or unsafe/);
+  f.write({ sessionId: 'real-session', cwd: project });
+  const observed = await activity.readSummaryActivity({}, { ...f.options, claudeProbeDir: probe });
+  assert.equal(observed.readings.get('real-session')?.state, 'waiting');
+  assert.equal(observed.sessions['claude:real-session']?.tokenDataUnavailable, true);
+  assert.equal(fs.statSync(project).mode & 0o7777, 0o755);
+  assert.equal(fs.readFileSync(path.join(project, 'keep'), 'utf8'), 'untouched');
+});
+
+test('Windows registry filtering follows the fixed profile cwd and tolerates a missing profile', async t => {
+  const f = fixture(t);
+  let available = true;
+  t.mock.method(os, 'userInfo', () => {
+    if (!available) throw new Error('fixture profile unavailable');
+    return { homedir: f.home };
+  });
+  const ignored = path.join(f.home, 'shared-probe');
+  const options = { ...f.options, platform: 'win32', claudeProbeDir: ignored,
+    env: { TOKEN_MONITOR_SHARED_DIR: path.join(f.home, 'shared-data') } };
+  const fixed = defaultProbeDir(options);
+  f.write({ sessionId: 'probe-session', pidDomain: 'win32', cwd: fixed });
+  f.write({ sessionId: 'real-session', pidDomain: 'win32', cwd: ignored }, 2345);
+  let readings = await activity.readSessionActivity(null, options);
+  assert.equal(readings.has('probe-session'), false);
+  assert.equal(readings.get('real-session').state, 'waiting');
+  available = false;
+  readings = await activity.readSessionActivity(null, options);
+  assert.equal(readings.get('real-session').state, 'waiting');
 });
 
 test('same-day archived Claude resumes across the patch lane without losing usage or duplicating Sessions', async t => {
@@ -226,6 +320,7 @@ test('Linux registry validates machine, PID namespace, PID and proc start ticks'
 });
 
 test('Linux dead registry owners clear Waiting even when their start ticks are retained', { skip: process.platform === 'win32' }, async t => {
+  t.mock.method(Date, 'now', () => now + 60_000);
   const f = linuxFixture(t); f.writeLinux();
   const key = 'claude:test-session';
   for (const state of ['Z', 'X', 'x']) {
@@ -256,7 +351,8 @@ test('Linux live PID registry fixture matches this process on Linux CI', { skip:
   assert.deepEqual(reading.get('test-session'), { state: 'running', observedAt: new Date(now).toISOString() });
 });
 
-test('activity applies to every period, renews without token changes, and explicitly clears missing evidence', () => {
+test('activity applies to every period, renews without token changes, and explicitly clears missing evidence', (t) => {
+  t.mock.method(Date, 'now', () => now + 60_000);
   const original = Object.fromEntries(['today', 'month', 'allTime'].map(name =>
     [name, { sessions: { 'claude:test-session': session() } }]));
   let summary = original;
@@ -279,7 +375,8 @@ test('activity applies to every period, renews without token changes, and explic
   assert.equal(original.today.sessions['claude:test-session'].liveActivity.state, 'waiting');
 });
 
-test('unchanged polling keeps object identity and changed observations share the accounting maps', () => {
+test('unchanged polling keeps object identity and changed observations share the accounting maps', (t) => {
+  t.mock.method(Date, 'now', () => now + 60_000);
   const row = session();
   const codex = { ...session(), client: 'codex', sessionId: 'codex-session' };
   const summary = { today: { totalTokens: 200, sessions: { claude: row, codex } }, month: usage.emptyPeriod() };
@@ -312,7 +409,8 @@ test('explicit activity overrides transcript recency but expires, clears and res
   assert.equal(live.nextSessionStatusChangeAt([session()], now), now + live.LIVE_ACTIVITY_TTL_MS);
 });
 
-test('normalization strips private fields and merging follows the activity clock independently of token time', () => {
+test('normalization strips private fields and merging follows the activity clock independently of token time', (t) => {
+  t.mock.method(Date, 'now', () => now + 60_000);
   const old = session('waiting', { liveActivity: { state: 'waiting', observedAt: new Date(now).toISOString(), pid: 1234, waitingFor: 'private' } });
   const fresh = session('unknown', { liveActivity: { state: 'unknown', observedAt: new Date(now + 1000).toISOString() } });
   const period = (row) => usage.normalizePeriod({ sessions: { 'claude:test-session': row } });
@@ -492,6 +590,7 @@ function t3Fixture(f) {
 }
 
 test('T3 terminal runs yield to native Claude registry and expire without renewing idle', async t => {
+  t.mock.method(Date, 'now', () => now + 60_000);
   const f = fixture(t); const db = t3Fixture(f); f.write({ status: 'busy' });
   const completedAt = new Date(now - 1000).toISOString();
   db.prepare("UPDATE orchestration_v2_projection_runs SET status = 'cancelled', completed_at = ?, requested_at = ?")
@@ -535,6 +634,7 @@ test('T3 Claude formal waiting supersedes registry and resolves without transcri
 });
 
 test('a late T3 Claude message answer clears newer waiting through projection and patches', async t => {
+  t.mock.method(Date, 'now', () => now + 60_000);
   const f = fixture(t); const db = t3Fixture(f);
   db.prepare("UPDATE orchestration_v2_projection_runs SET status = 'completed', completed_at = ?")
     .run(new Date(now).toISOString());

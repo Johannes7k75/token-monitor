@@ -20,6 +20,7 @@ function harness(distance = 7, options = {}) {
       get textContent() { return this.children.map(child => child.textContent).join(''); },
       set textContent(text) { this.children = [{ textContent: text }]; },
       append(...children) { this.children = children; },
+      prepend(...children) { this.children.unshift(...children); },
       replaceChildren(...children) { this.children = children; },
       getBoundingClientRect: () => ({ width: 200 + distance, left: 0, right: 200, top: 0, bottom: 20 }),
       classList: {
@@ -28,6 +29,7 @@ function harness(distance = 7, options = {}) {
         toggle: (value, enabled) => enabled ? classes.add(value) : classes.delete(value)
       },
       addEventListener(type, handler) { this[type] = handler; },
+      setAttribute(name, value) { this[name] = value; },
       hasAttribute(name) { return Object.hasOwn(this, name); },
       removeAttribute(name) { delete this[name]; }
     };
@@ -102,15 +104,17 @@ test('sync endpoint reuses hover reading and preserves its wrapper across settin
   reduced = true;
   context.syncHubConnectionUi();
   h.frame(0);
-  assert.equal(endpoint.title, 'long-host.example:8443', 'the reduced-motion tooltip contains only the safe host');
+  assert.equal(endpoint.hasAttribute('title'), false);
+  assert.equal(endpoint.classList.contains('is-overflow-static'), true);
   state.settings.hubUrl = 'https://next.example/secret';
   context.syncHubConnectionUi();
   assert.equal(endpoint.children[0], content);
-  assert.equal(endpoint.title, 'next.example');
+  assert.equal(endpoint.textContent, 'next.example');
+  assert.equal(endpoint.hasAttribute('title'), false);
   state.settings.hubUrl = 'invalid credential text';
   context.syncHubConnectionUi();
   assert.equal(endpoint.textContent, 'Saved Hub URL');
-  assert.equal(endpoint.title, 'Saved Hub URL');
+  assert.equal(endpoint.hasAttribute('title'), false);
 });
 
 for (const className of ['detail-ex-title', 'detail-heading']) {
@@ -233,6 +237,32 @@ test('small overflow moves smoothly in fractional pixels and finishes promptly',
   assert.equal(h.element.classList.contains('has-overflow-fade'), true);
 });
 
+for (const distance of [100, 1000, 3000]) {
+  test(`${distance}px overflow scrolls at 100 px/s and finishes at its endpoint`, () => {
+    const h = harness(distance);
+    h.hover();
+    h.frame(500);
+    assert.equal(h.element.children[0].style.transform, 'translate3d(-50px, 0, 0)', 'speed is independent of text length');
+    h.frame(distance * 10 - 1);
+    assert.equal(h.frames.size, 1, 'the animation continues until the full distance is covered');
+    h.frame(distance * 10);
+    assert.equal(h.element.children[0].style.transform, `translate3d(-${distance}px, 0, 0)`, 'the full text arrives on time');
+    assert.equal(h.frames.size, 0, 'the animation finishes without a perpetual repaint');
+  });
+}
+
+test('mouseleave cancels an active long-preview animation', () => {
+  const h = harness(3000);
+  h.hover();
+  h.frame(4000);
+  assert.equal(h.element.children[0].style.transform, 'translate3d(-400px, 0, 0)');
+  h.element.mouseleave();
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.element.children[0].style.transform, 'translate3d(0px, 0, 0)');
+  h.frame(30_000);
+  assert.equal(h.element.children[0].style.transform, 'translate3d(0px, 0, 0)', 'cancelled motion cannot resume');
+});
+
 test('unchanged text preserves pending, active and completed hover motion', () => {
   const h = harness(100);
   const content = h.element.children[0];
@@ -262,7 +292,7 @@ test('unchanged text preserves pending, active and completed hover motion', () =
   assert.equal(h.element.classList.contains('is-hover-reading'), false);
 });
 
-test('leaving before the delay cancels motion, and reduced motion keeps the full tooltip', () => {
+test('leaving before the delay cancels motion, and reduced motion keeps static overflow reading', () => {
   let reduced = false;
   let releases = 0;
   const h = harness(100, { prefersReducedMotion: () => reduced, onLeave: () => { releases++; } });
@@ -278,7 +308,8 @@ test('leaving before the delay cancels motion, and reduced motion keeps the full
   assert.equal(h.timers.size, 0);
   assert.equal(releases, 1, 'reduced-motion hover exits do not notify a reading release');
   assert.equal(h.element.classList.contains('is-hover-reading'), false);
-  assert.equal(h.element.title, h.element.textContent);
+  assert.equal(h.element.hasAttribute('title'), false);
+  assert.equal(h.element.classList.contains('is-overflow-static'), true);
 });
 
 test('fitting titles do not notify a reading release on ordinary hover exits', () => {
@@ -341,6 +372,7 @@ for (const phase of ['pending', 'active', 'completed']) {
     assert.ok(start >= 0 && end > start, 'commitCard source boundaries exist');
     const context = {
       document: h.document,
+      captureCardSwitch: () => null, animateCardSwitch() {},
       contentLayer, overflowText: h.api, CARD_SCROLL_SELECTOR: '.scroll',
       cardResetAnimator: { capture: () => null, animate() {} }
     };
@@ -430,7 +462,7 @@ for (const phase of ['pending', 'active', 'completed']) {
   }
 }
 
-test('native text tooltips follow reduced motion for binding, updates and preference changes', () => {
+test('static overflow reading follows reduced motion without native tooltips', () => {
   let reduced = false;
   const h = harness(100, { prefersReducedMotion: () => reduced });
   assert.equal(h.element.hasAttribute('title'), false);
@@ -439,19 +471,37 @@ test('native text tooltips follow reduced motion for binding, updates and prefer
   reduced = true;
   h.api.refresh();
   h.frame(0);
-  assert.equal(h.element.title, 'Renamed title');
+  assert.equal(h.element.hasAttribute('title'), false);
+  assert.equal(h.element.classList.contains('is-overflow-static'), true);
   h.api.setText(h.element, 'Another title');
-  assert.equal(h.element.title, 'Another title');
+  assert.equal(h.element.textContent, 'Another title');
+  assert.equal(h.element.hasAttribute('title'), false);
   const reducedTitle = h.node();
   reducedTitle.textContent = 'Bound with reduced motion';
   h.api.bind(reducedTitle);
-  assert.equal(reducedTitle.title, reducedTitle.textContent);
+  assert.equal(reducedTitle.hasAttribute('title'), false);
+  assert.equal(reducedTitle.classList.contains('is-overflow-static'), true);
   reduced = false;
   h.api.setText(h.element, h.element.textContent);
   h.frame(0);
   assert.equal(h.element.hasAttribute('title'), false, 'unchanged text also observes the latest preference');
+  assert.equal(h.element.classList.contains('is-overflow-static'), false);
   const fitting = harness(0);
   assert.equal(fitting.element.hasAttribute('title'), false, 'fitting text has no tooltip in normal mode');
+});
+
+test('manual reduced-motion scrolling exposes the tail and updates its fade without animation', () => {
+  const h = harness(100, { prefersReducedMotion: () => true });
+  const text = h.element.textContent;
+  assert.equal(h.element.classList.contains('has-overflow-fade'), true);
+  h.element.scrollLeft = 100;
+  h.element.scroll();
+  assert.equal(h.element.classList.contains('has-overflow-fade'), false);
+  assert.equal(h.element.textContent, text);
+  assert.equal(h.element.children[0].style.transform, 'translate3d(0px, 0, 0)');
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.element.hasAttribute('title'), false);
 });
 
 test('failed handoff cancels a pending delay immediately', () => {
@@ -595,6 +645,7 @@ test('actual shared row rendering keeps group availability and binds Auto Review
   const app = fs.readFileSync(path.join(__dirname, '../../src/electron/renderer/app.js'), 'utf8');
   const makeNode = () => {
     const node = h.node();
+    node.append = (...children) => node.children.push(...children);
     node.querySelector = selector => {
       const name = selector.slice(1);
       const find = children => {
@@ -615,7 +666,9 @@ test('actual shared row rendering keeps group availability and binds Auto Review
   };
   const bindings = [];
   const context = {
-    state: { breakdown: 'session' }, rowWidth: () => 50, iconKindFor: () => ({ kind: 'dot' }),
+    state: { breakdown: 'session', settings: { showToolIcons: true, deviceId: 'imac' } }, rowWidth: () => 50,
+    toolIconsEnabled: value => value !== false, clientsWithIcon: new Set(['codex', 'claude']),
+    deviceIconsApi: require('../../src/electron/renderer/deviceIcons'),
     setHoverMarqueeText: h.api.setText, overflowText: h.api, formatNumber: String, formatCost: String,
     rowNumberAnimations: new Map(),
     updateRowContext() {}, updateRowLive() {}, applyBarScale() {}, cancelRowNumberAnimation() {},
@@ -628,8 +681,9 @@ test('actual shared row rendering keeps group availability and binds Auto Review
     rowTemplate: makeRow, openSessionDetail() {}
   };
   const update = app.slice(app.indexOf('function updateRow('), app.indexOf('function applyHomeListMark('));
+  const iconKind = app.slice(app.indexOf('function iconKindFor('), app.indexOf('const LIMIT_PROVIDER_ACCOUNT_NODES ='));
   const member = app.slice(app.indexOf('function sessionGroupRunNode('), app.indexOf('function renderSessionGroupDetail('));
-  vm.runInNewContext(`${update}\n${member}\nglobalThis.update = updateRow; globalThis.member = sessionGroupRunNode;`, context);
+  vm.runInNewContext(`${iconKind}\n${update}\n${member}\nglobalThis.update = updateRow; globalThis.member = sessionGroupRunNode;`, context);
   const now = new Date();
   const accounting = { client: 'codex', sessionId: 'old', t3ThreadId: 'main', totalTokens: 500, costUsd: 2,
     models: { a: 500 }, lastUsedAt: new Date(2026, 9, 11, 8, 0).toISOString() };
@@ -661,4 +715,36 @@ test('actual shared row rendering keeps group availability and binds Auto Review
     assert.equal(rendered.querySelector('.row-title').textContent, '2 models · 08:00');
     assert.equal(rendered.classList.contains('session-group-run'), true, 'existing tooltip repaint guard includes the target');
   }
+  const sourced = { name: 'Review', kind: 'session', client: 'codex', clientLabel: 'Codex',
+    subtitle: 'Codex · a · high', modelLabel: 'a', reasoningEffort: 'high', value: 500, cost: 2,
+    sourceDevice: { deviceId: 'macbook', name: 'MacBook', deviceKind: 'laptop' } };
+  const sourcedRow = makeRow();
+  for (const value of [500, 600]) {
+    context.update(sourcedRow, { ...sourced, value });
+    assert.equal(sourcedRow.querySelector('.row-subtitle').textContent, 'a · high');
+    assert.equal(sourcedRow.querySelector('.row-subtitle').querySelector('.device-kind-icon'), null);
+    assert.equal(sourcedRow.querySelector('.row-device').textContent, 'MacBook');
+    assert.equal(sourcedRow.querySelector('.row-device').classList.contains('hidden'), false);
+    assert.equal(sourcedRow.querySelector('.row-device').querySelector('.device-kind-icon').className,
+      'device-kind-icon device-kind-laptop');
+  }
+  for (const sourceDevice of [
+    { deviceId: 'imac', name: 'MacBook', deviceKind: 'desktop' }, undefined,
+    { name: 'Unknown device' }
+  ]) {
+    context.update(sourcedRow, { ...sourced, sourceDevice });
+    assert.equal(sourcedRow.querySelector('.row-device').classList.contains('hidden'), true);
+    assert.equal(sourcedRow.querySelector('.row-device').textContent, '');
+    assert.equal(sourcedRow.querySelector('.row-subtitle').textContent, 'a · high');
+  }
+  context.update(sourcedRow, { ...sourced, client: 'custom-tool', clientLabel: 'Custom Tool', subtitle: 'Custom Tool · a', reasoningEffort: null });
+  assert.equal(sourcedRow.querySelector('.row-mark').className, 'row-mark dot');
+  assert.equal(sourcedRow.querySelector('.row-subtitle').textContent, 'Custom Tool · a');
+  context.state.settings.showToolIcons = false;
+  context.update(sourcedRow, sourced);
+  assert.equal(sourcedRow.querySelector('.row-subtitle').textContent, 'Codex · a · high');
+  assert.equal(sourcedRow.querySelector('.row-device').textContent, 'MacBook');
+  delete context.state.settings.deviceId;
+  context.update(sourcedRow, sourced);
+  assert.equal(sourcedRow.querySelector('.row-device').classList.contains('hidden'), true);
 });

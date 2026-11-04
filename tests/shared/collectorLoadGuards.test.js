@@ -1590,13 +1590,12 @@ test('watchPathsForClients watches only Proma data that is currently parsed', ()
   }
 });
 
-// Cursor's cache is a home-relative literal upstream and Antigravity's follows
-// TOKSCALE_CONFIG_DIR, so the two are seeded from different roots on purpose:
-// pointing the override at the Cursor dir must not be what makes Cursor detect.
+// Both caches follow TOKSCALE_CONFIG_DIR when it is configured.
 test('clientDataDirPresence still detects cursor/antigravity via their cache dirs', () => {
   const tmp = withTmpHome([path.join('.config', 'tokscale', 'cursor-cache')]);
   const configDir = path.join(tmp, 'tokscale-config');
   fs.mkdirSync(path.join(configDir, 'antigravity-cache'), { recursive: true });
+  fs.mkdirSync(path.join(configDir, 'cursor-cache'), { recursive: true });
   const originalHomedir = os.homedir;
   const previousConfigDir = process.env.TOKSCALE_CONFIG_DIR;
   // The Windows runner exports an absolute HOME, which tokscale's home_dir()
@@ -2418,6 +2417,7 @@ test('watchPathsForClients keeps bounded tool roots but leaves Kiro IDE globalSt
     path.join('.config', 'Code', 'User', 'globalStorage', 'kilocode.kilo-code', 'tasks'),
     path.join('.vscode-server', 'data', 'User', 'globalStorage', 'kilocode.kilo-code', 'tasks'),
     path.join('Library', 'Application Support', 'Code', 'User', 'globalStorage', 'kilocode.kilo-code', 'tasks'),
+    path.join('AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'kilocode.kilo-code', 'tasks'),
     path.join('.local', 'share', 'mimocode'),
     path.join('.zcode', 'projects'),
     path.join('.kiro', 'sessions', 'workspace-a', 'sess_123'),
@@ -2440,9 +2440,8 @@ test('watchPathsForClients keeps bounded tool roots but leaves Kiro IDE globalSt
     assert.ok(dirs.includes(path.join(tmp, '.local', 'share', 'kilo')));
     assert.ok(dirs.includes(path.join(tmp, '.config', 'Code', 'User', 'globalStorage', 'kilocode.kilo-code', 'tasks')));
     assert.ok(dirs.includes(path.join(tmp, '.vscode-server', 'data', 'User', 'globalStorage', 'kilocode.kilo-code', 'tasks')));
-    // Tokscale does not scan Kilo's native macOS/Windows VS Code globalStorage,
-    // so we must not watch it (would be a dead watch + a false "active" status).
-    assert.ok(!dirs.includes(path.join(tmp, 'Library', 'Application Support', 'Code', 'User', 'globalStorage', 'kilocode.kilo-code', 'tasks')));
+    assert.ok(dirs.includes(path.join(tmp, 'Library', 'Application Support', 'Code', 'User', 'globalStorage', 'kilocode.kilo-code', 'tasks')));
+    assert.ok(dirs.includes(path.join(tmp, 'AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'kilocode.kilo-code', 'tasks')));
     assert.ok(dirs.includes(path.join(tmp, '.local', 'share', 'mimocode')));
     assert.ok(dirs.includes(path.join(tmp, '.zcode', 'projects')));
     // Kiro sessions and the bounded kiro-cli database keep seconds-level
@@ -2553,10 +2552,11 @@ test('watchIgnoreMatcher prunes the Hermes runtime but keeps the state.db family
     assert.equal(ignored(path.join(hermes, 'state.db')), false);
     assert.equal(ignored(path.join(hermes, 'state.db-wal')), false);
     assert.equal(ignored(path.join(hermes, 'state.db-shm')), false);
-    // The runtime / logs / cache under ~/.hermes are pruned (never recursed).
+    // Runtime, non-usage logs and cache stay pruned. Agent call logs are sources.
     assert.equal(ignored(path.join(hermes, 'hermes-agent')), true);
     assert.equal(ignored(path.join(hermes, 'hermes-agent', 'node_modules')), true);
-    assert.equal(ignored(path.join(hermes, 'logs')), true);
+    assert.equal(ignored(path.join(hermes, 'logs')), false);
+    assert.equal(ignored(path.join(hermes, 'logs', 'debug.log')), true);
     assert.equal(ignored(path.join(hermes, 'cache', 'blob')), true);
     // Other clients' paths are never touched by the matcher.
     assert.equal(ignored(path.join(tmp, '.claude', 'projects', 'p', 'a.jsonl')), false);
@@ -2592,8 +2592,10 @@ test('watchIgnoreMatcher keeps profile dirs and their db family so profile chang
     assert.equal(ignored(path.join(profileDir, 'state.db')), false);
     assert.equal(ignored(path.join(profileDir, 'state.db-wal')), false);
     assert.equal(ignored(path.join(profileDir, 'state.db-shm')), false);
-    // Junk inside a profile dir is still pruned.
-    assert.equal(ignored(path.join(profileDir, 'logs')), true);
+    // Profiles retain direct agent logs without admitting unrelated logs.
+    assert.equal(ignored(path.join(profileDir, 'logs')), false);
+    assert.equal(ignored(path.join(profileDir, 'logs', 'agent.log.1')), false);
+    assert.equal(ignored(path.join(profileDir, 'logs', 'debug.log')), true);
   } finally {
     os.homedir = originalHomedir;
     if (previousHermesHome === undefined) delete process.env.HERMES_HOME;
@@ -2616,7 +2618,8 @@ test('watchIgnoreMatcher honors HERMES_HOME and is absent when Hermes is not tra
     assert.deepEqual(watchPathsForClients('hermes'), [hermesHome]);
     const ignored = watchIgnoreMatcher('hermes');
     assert.equal(ignored(path.join(hermesHome, 'state.db-wal')), false);
-    assert.equal(ignored(path.join(hermesHome, 'logs')), true);
+    assert.equal(ignored(path.join(hermesHome, 'logs')), false);
+    assert.equal(ignored(path.join(hermesHome, 'logs', 'agent.log')), false);
     // No Hermes tracked, no matcher, so other watchers run unchanged.
     assert.equal(watchIgnoreMatcher('claude,codex'), undefined);
   } finally {
@@ -3384,7 +3387,7 @@ test('a SQLite client whose scan does not recreate its sidecar still watches db-
 // was actually about. A suppressed shm event must not spawn a scan, while a real
 // -wal change from the same directory still must — otherwise the fix would have
 // traded a runaway loop for silent staleness.
-for (const client of ['zcode', 'cherrystudio']) {
+for (const client of ['zcode', 'cherrystudio', 'goose']) {
   test(`a ${client} shm event does not spawn a scan while WAL and database changes still do`, async () => {
     const tmp = withTmpHome([]);
     const originalHomedir = os.homedir;
@@ -3392,10 +3395,10 @@ for (const client of ['zcode', 'cherrystudio']) {
     os.homedir = () => tmp;
     process.env.TOKEN_MONITOR_SHARED_DIR = tmp;
     const { clientSourceRoots } = freshCollector();
-    const dbDir = clientSourceRoots(client)[client].find((root) => root.id === (client === 'zcode' ? 'zcode-db' : 'cherrystudio-db'))?.dir
+    const dbDir = clientSourceRoots(client)[client].find((root) => root.id === `${client}-db`)?.dir
       || path.join(tmp, '.zcode', 'cli', 'db');
     fs.mkdirSync(dbDir, { recursive: true });
-    const dbName = client === 'zcode' ? 'db.sqlite' : 'cherrystudio.sqlite';
+    const dbName = { zcode: 'db.sqlite', cherrystudio: 'cherrystudio.sqlite', goose: 'sessions.db' }[client];
 
     const chokidar = require('chokidar');
     const originalWatch = chokidar.watch;

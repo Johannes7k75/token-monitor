@@ -34,6 +34,7 @@ const { clientColors, fallbackModelColors, modelVendorFor, modelColor } = window
 const motionPreferenceApi = window.TokenMonitorMotionPreference;
 const tokenNumberAnimationApi = window.TokenMonitorTokenNumberAnimation;
 const windowsGlassApi = window.TokenMonitorWindowsGlass;
+const windowsBackdropApi = window.TokenMonitorWindowsBackdropMode;
 const macBackdropApi = window.TokenMonitorMacBackdropMode;
 const glassRenderingApi = window.TokenMonitorGlassRendering;
 const fontSettingsApi = window.TokenMonitorFontSettings;
@@ -109,6 +110,8 @@ const LIMIT_PROVIDER_CONNECTION_DETAIL_KEYS = {
   cline: 'settings.limits.connection.cline',
   grok: 'settings.limits.connection.grok',
   kiro: 'settings.limits.connection.kiro',
+  manus: 'settings.limits.connection.manus',
+  muse: 'settings.limits.connection.muse',
   workbuddy: 'settings.limits.connection.workbuddy'
 };
 const TRAY_ICON_VARIANTS = [
@@ -194,6 +197,7 @@ const {
   toolIconsEnabled
 } = breakdownRenderPolicyApi;
 const deviceBreakdownApi = window.TokenMonitorDeviceBreakdown;
+const deviceIconsApi = window.TokenMonitorDeviceIcons;
 const toolDetailsApi = window.TokenMonitorToolDetails;
 const usageAttributionRowsApi = window.TokenMonitorUsageAttributionRows;
 const projectRowsApi = window.TokenMonitorProjectRows;
@@ -238,6 +242,8 @@ const LIMIT_CAPABILITY_TAG_KEYS = {
   'Sign in again': 'settings.limits.status.signInAgain',
   'Run grok login': 'settings.limits.status.runGrokLogin',
   'Run kiro-cli login': 'settings.limits.status.runKiroLogin',
+  'Install Muse Code': 'settings.limits.status.installMuseCode',
+  'Run muse login': 'settings.limits.status.runMuseLogin',
   'Open Cline': 'settings.limits.status.openCline',
   'Re-login': 'settings.limits.status.relogin',
   Limited: 'settings.limits.status.limited',
@@ -270,6 +276,16 @@ const HOME_MODULE_OPTIONS = [
   { id: 'device', labelKey: 'home.devices', viewId: 'device' },
   { id: 'trends', labelKey: 'home.activity', viewId: 'trends' }
 ];
+const pluginViewsApi = window.TokenMonitorPluginViews;
+const pluginPlacementsApi = window.TokenMonitorPluginPlacements;
+// Assigned in the Plugins block below; read lazily by Home, tray and settings.
+let pluginViewHost = null;
+let pluginContent = null;
+let pluginMainPages = null;
+function pluginPageOptions() { return window.TokenMonitorPluginMainPages?.entries(state.pluginCatalog) || []; }
+let pluginApi = null;
+let pluginSettingsPanel = null;
+let pluginUpdateCount = 0;
 const VIEW_SWITCHER_LONG_PRESS_MS = 420;
 const VIEW_SWITCHER_HOVER_CLOSE_MS = 160;
 const VIEW_ICON_CLASSES = {
@@ -295,7 +311,7 @@ const TOKEN_MONITOR_ISSUES_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/issues/new/cho
 const TOKEN_MONITOR_WEBSITE_URL = 'https://javis-ai.com/token-monitor/';
 const TOKEN_MONITOR_WSL_SQLITE_GUIDE_URL = `${TOKEN_MONITOR_REPOSITORY_URL}/blob/main/docs/wsl-sqlite-setup.md`;
 const serviceStatusProviderPreferencesApi = window.TokenMonitorServiceStatusProviderPreferences;
-const SETTINGS_SECTION_IDS = ['general', 'main', 'window', 'appearance', 'tools', 'limits', 'subscriptions', 'sync'];
+const SETTINGS_SECTION_IDS = ['general', 'main', 'window', 'appearance', 'tools', 'limits', 'subscriptions', 'sync', 'plugins'];
 const REFRESH_BUTTON_FEEDBACK_MS = 700;
 const LIVE_TOKEN_RATE_ACTIVE_MS = 8000;
 const LIVE_TOKEN_RATE_CLEAR_MS = 3 * 60 * 1000;
@@ -306,7 +322,7 @@ let initialBreakdownPreferenceApplied = typeof initialViewState.breakdown === 's
 
 function normalizeInitialViewValue(value, allowed, fallback) {
   const raw = String(value || '').trim();
-  return allowed.has(raw) ? raw : fallback;
+  return allowed.has(raw) || (allowed === viewBreakdownValues && pluginPlacementsApi.isHomeToken(raw)) ? raw : fallback;
 }
 
 const state = { period: normalizeInitialViewValue(initialViewState.period, viewPeriodValues, 'today'), appUpdate: null, breakdown: normalizeInitialViewValue(initialViewState.breakdown, viewBreakdownValues, 'home'), viewSwitcherOpen: false, viewSwitcherHasOpened: false, limitDetailTooltipHasOpened: false, limitDetailTooltipActive: false, limitDetailTooltipRenderPending: false, settings: null, windowVisible: new URLSearchParams(window.location.search).get('windowHidden') !== '1', stats: null, homeHistory: null, homeHistoryBusy: false, homeHistoryRequested: false, homeHistorySignature: '', homeHistoryRetries: 0, homeHistoryRetryTimer: null, homeActivityScrollLeft: null, homeActivityFollowEnd: true, homeActivityResizeObserver: null, serviceStatus: null, serviceStatusBusy: false, serviceProvidersExpanded: false, trendSettingsExpanded: false, trendsActivating: false, homeSettingsExpanded: false, homeLimitSettingsExpanded: false, limitProviderSettingsExpanded: '', clientHealthExpanded: '', clientSources: clientSourceCacheApi.createClientSourceCache(), clientSourcesKey: '', clientSourcesRequest: 0, subscriptionEditingId: '', subscriptionTopUps: [], subscriptionFormBase: null, subscriptionEditorTransitionId: 0, serviceStatusTicker: null, refreshTimer: null, refreshBusy: false, refreshFeedbackTimer: null, currentTotal: 0, rowSignature: '', streamConnected: false, streamFailure: null, mode: 'idle', appInfo: null, systemDarkUi: false, tokscaleStatus: null, hubInfo: null, hubBuildStatus: null, cursorAccount: { status: null, error: '' }, cursorAccountExpanded: false, codexAccountExpanded: false, codexAccountError: '', codexSignInBusy: false, codexSignInFlowId: '', codexLoginUrl: '', codexLoginStatus: '', codexLoginOutput: '', codexWorkspaceChoices: [], codexWorkspaceId: '', codexActiveAccount: null, codexPendingActiveAccount: null, codexPendingActiveAccountUntil: 0, codexPendingActiveAccountTimer: null, customPricingExpanded: false, claudeAccountExpanded: false, claudePendingCheckSince: 0, opencodeProfileCount: 0, opencodeCookieExpanded: false, openrouterProfileCount: 0, openrouterAccountExpanded: false, thirdPartyProfileCount: 0, thirdPartyAccountExpanded: false, deepseekAccountExpanded: false, deepseekPendingCheckSince: 0, minimaxAccountExpanded: false, minimaxPendingCheckSince: 0, factoryAccountExpanded: false, factoryPendingCheckSince: 0, clineAccountExpanded: false, clinePendingCheckSince: 0, zaiAccountExpanded: false, zaiPendingCheckSince: 0, zaiteamAccountExpanded: false, zaiteamPendingCheckSince: 0, volcengineAccountExpanded: false, volcenginePendingCheckSince: 0, volcengineAgentExpanded: false, qoderAccountExpanded: false, qoderPendingCheckSince: 0, kimiAccountExpanded: false, kimiPendingCheckSince: 0, ollamaAccountExpanded: false, ollamaPendingCheckSince: 0, mimoAccountExpanded: false, mimoAccountError: '', antigravityAccountExpanded: false, antigravityAccountError: '', antigravitySignInBusy: false, workbuddyAccountExpanded: false, workbuddyAccountError: '', workbuddySignInBusy: false, workbuddyCancelBusy: false, workbuddyMutationBusy: false, workbuddyLoginAttempt: 0, workbuddyLoginStatusKey: '', workbuddyAccountsRevision: 0, copilotAccountExpanded: false, copilotManualExpanded: false, copilotPendingCheckSince: 0, copilotSignInBusy: false, copilotSignInCancelable: false, copilotSignInFlowId: '', copilotAuthorizeMessage: '', copilotLoginStatus: '', copilotErrorMessage: '', floatingBubble: initialFloatingBubble, suppressInitialNumberAnimation: window.__TOKEN_MONITOR_SUPPRESS_INITIAL_NUMBER_ANIMATION__ === true, openSession: null, detailSort: 'time', recordingWindowShortcut: false, windowShortcutInvalid: false, toolSearchQuery: '', limitProviderSearchQuery: '', accountPanelMessages: {} };
@@ -353,6 +369,7 @@ state.fixedPeriodHistoryPromise = null;
 state.fixedPeriodHistoryCoordinator = null;
 state.fixedPeriodSnapshot = null;
 state.periodMenuOpen = false;
+state.sessionToolFilter = '';
 state.sessionPage = 0;
 state.sessionPagerSignature = '';
 let directBreakdownOverride = null;
@@ -361,6 +378,7 @@ state.sessionSettingsExpanded = false;
 state.homeActivitySettingsExpanded = false;
 state.settingsSections = Object.fromEntries(SETTINGS_SECTION_IDS.map((id) => [id, false]));
 const defaultAppearance = { glassOpacity: 68, glassBlur: 32, backgroundImageOpacity: 28, zoomFactor: 1, systemGlass: true, windowsBackdrop: 'acrylic', macBackdrop: 'vibrancy', reduceMotion: 'system', tokenNumberAnimation: 'roll', showLiveDot: true, showToolIcons: true, titleIconOnly: true, showCompactTotalTokens: false, showLiveTokenRate: false, liveTokenRateScope: 'all', compactTokenUnits: 'western', settingsInTitlebar: false };
+const nativeGlassTintSettings = [['macGlassTint', 'liquid-glass'], ['macClearGlassTint', 'liquid-glass-clear']];
 let nativeMaterialState = glassRenderingApi.normalizeNativeMaterialState();
 let nativeMaterialRevision = 0;
 let appearancePreview = {};
@@ -371,8 +389,9 @@ const pendingSettingsPatches = new Set();
 let viewSwitcherLongPressTimer = null;
 let viewSwitcherLongPressTriggered = false;
 let viewSwitcherHoverCloseTimer = null;
+let viewSwitcherRenderKey = '';
 const els = {
-  shell: document.querySelector('.shell'), status: document.getElementById('status'), liveDot: document.getElementById('liveDot'), tokenRateReveal: document.getElementById('tokenRateReveal'), liveTokenRate: document.getElementById('liveTokenRate'), liveTokenRateValue: document.getElementById('liveTokenRateValue'), totalTokens: document.getElementById('totalTokens'), totalTokensCompact: document.getElementById('totalTokensCompact'), cost: document.getElementById('cost'), homePanel: document.getElementById('homePanel'), breakdown: document.getElementById('breakdown'), sessionPagerHost: document.getElementById('sessionPagerHost'), serviceStatusPanel: document.getElementById('serviceStatusPanel'), limitsPanel: document.getElementById('limitsPanel'), trendsPanel: document.getElementById('trendsPanel'), viewSwitcher: document.getElementById('viewSwitcher'), pinButton: document.getElementById('pinButton'), utilityActions: document.getElementById('utilityActions'), settingsButton: document.getElementById('settingsButton'), settingsPanel: document.getElementById('settingsPanel'), languageInput: document.getElementById('languageInput'), currencyInput: document.getElementById('currencyInput'), currencyRateRow: document.getElementById('currencyRateRow'), currencyRateModeAuto: document.getElementById('currencyRateModeAuto'), currencyRateModeManual: document.getElementById('currencyRateModeManual'), currencyRateManualField: document.getElementById('currencyRateManualField'), currencyRateOverrideInput: document.getElementById('currencyRateOverrideInput'), currencyRateStatus: document.getElementById('currencyRateStatus'), hubUrlInput: document.getElementById('hubUrlInput'), secretInput: document.getElementById('secretInput'), deviceIdInput: document.getElementById('deviceIdInput'), limitProviderCheckboxes: document.getElementById('limitProviderCheckboxes'), limitsRefreshInput: document.getElementById('limitsRefreshInput'), limitsRefreshAdaptiveNote: document.getElementById('limitsRefreshAdaptiveNote'), showLimitSourceInput: document.getElementById('showLimitSourceInput'), maskLimitAccountEmailsInput: document.getElementById('maskLimitAccountEmailsInput'), showLimitUsedInputs: Array.from(document.querySelectorAll('input[name="showLimitUsed"]')), liveDotInput: document.getElementById('liveDotInput'), toolIconsInput: document.getElementById('toolIconsInput'), floatingBubbleInput: document.getElementById('floatingBubbleInput'), floatingBubbleTriggerInputs: Array.from(document.querySelectorAll('input[name="floatingBubbleTrigger"]')), floatingBubbleTriggerRow: document.getElementById('floatingBubbleTriggerRow'), floatingBubbleContentInput: document.getElementById('floatingBubbleContentInput'), floatingBubbleContentRow: document.getElementById('floatingBubbleContentRow'), floatingBubbleComposer: document.getElementById('floatingBubbleComposer'), floatingBubbleContent: document.getElementById('floatingBubbleContent'), discordRpcInput: document.getElementById('discordRpcInput'), windowBehaviorInput: document.getElementById('windowBehaviorInput'), keepAboveTaskbarInput: document.getElementById('keepAboveTaskbarInput'), keepAboveTaskbarRow: document.getElementById('keepAboveTaskbarRow'), showTrayIconInput: document.getElementById('showTrayIconInput'), showTrayProviderBadgeInput: document.getElementById('showTrayProviderBadgeInput'), hideAppIconInput: document.getElementById('hideAppIconInput'), hideAppIconRow: document.getElementById('hideAppIconRow'), hideAppIconOptions: document.getElementById('hideAppIconOptions'), trayModeInput: document.getElementById('trayModeInput'), trayContentInput: document.getElementById('trayContentInput'), trayComposer: document.getElementById('trayComposer'), windowToggleShortcutValue: document.getElementById('windowToggleShortcutValue'), windowToggleShortcutClearButton: document.getElementById('windowToggleShortcutClearButton'), windowToggleShortcutNote: document.getElementById('windowToggleShortcutNote'), glassInput: document.getElementById('glassInput'), blurInput: document.getElementById('blurInput'), zoomInput: document.getElementById('zoomInput'), resetGlassButton: document.getElementById('resetGlassButton'), resetDepthButton: document.getElementById('resetDepthButton'), resetZoomButton: document.getElementById('resetZoomButton'), saveSettingsButton: document.getElementById('saveSettingsButton'), clientDisplayList: document.getElementById('clientDisplayList'), wslScanInput: document.getElementById('wslScanInput'), wslScanRow: document.getElementById('wslScanRow'), wslPanel: document.getElementById('wslPanel'), openConfigButton: document.getElementById('openConfigButton'), exportAutoInput: document.getElementById('exportAutoInput'), exportAutoDetails: document.getElementById('exportAutoDetails'), exportAutoStatus: document.getElementById('exportAutoStatus'), exportDirLabel: document.getElementById('exportDirLabel'), exportPickDirButton: document.getElementById('exportPickDirButton'), exportIntervalInput: document.getElementById('exportIntervalInput'), exportNowButton: document.getElementById('exportNowButton'), refreshButton: document.getElementById('refreshButton'), minButton: document.getElementById('minButton'), closeButton: document.getElementById('closeButton'), floatingBubbleTab: document.getElementById('floatingBubbleTab'),
+  shell: document.querySelector('.shell'), status: document.getElementById('status'), liveDot: document.getElementById('liveDot'), tokenRateReveal: document.getElementById('tokenRateReveal'), liveTokenRate: document.getElementById('liveTokenRate'), liveTokenRateValue: document.getElementById('liveTokenRateValue'), totalTokens: document.getElementById('totalTokens'), totalTokensCompact: document.getElementById('totalTokensCompact'), cost: document.getElementById('cost'), homePanel: document.getElementById('homePanel'), breakdown: document.getElementById('breakdown'), sessionPagerHost: document.getElementById('sessionPagerHost'), sessionToolFilter: document.getElementById('sessionToolFilter'), sessionToolFilterItems: document.getElementById('sessionToolFilterItems'), sessionToolPrevious: document.getElementById('sessionToolPrevious'), sessionToolNext: document.getElementById('sessionToolNext'), serviceStatusPanel: document.getElementById('serviceStatusPanel'), limitsPanel: document.getElementById('limitsPanel'), trendsPanel: document.getElementById('trendsPanel'), viewSwitcher: document.getElementById('viewSwitcher'), pinButton: document.getElementById('pinButton'), utilityActions: document.getElementById('utilityActions'), settingsButton: document.getElementById('settingsButton'), settingsPanel: document.getElementById('settingsPanel'), languageInput: document.getElementById('languageInput'), currencyInput: document.getElementById('currencyInput'), currencyRateRow: document.getElementById('currencyRateRow'), currencyRateModeAuto: document.getElementById('currencyRateModeAuto'), currencyRateModeManual: document.getElementById('currencyRateModeManual'), currencyRateManualField: document.getElementById('currencyRateManualField'), currencyRateOverrideInput: document.getElementById('currencyRateOverrideInput'), currencyRateStatus: document.getElementById('currencyRateStatus'), hubUrlInput: document.getElementById('hubUrlInput'), secretInput: document.getElementById('secretInput'), deviceIdInput: document.getElementById('deviceIdInput'), limitProviderCheckboxes: document.getElementById('limitProviderCheckboxes'), limitsRefreshInput: document.getElementById('limitsRefreshInput'), limitsRefreshAdaptiveNote: document.getElementById('limitsRefreshAdaptiveNote'), showLimitSourceInput: document.getElementById('showLimitSourceInput'), maskLimitAccountEmailsInput: document.getElementById('maskLimitAccountEmailsInput'), showLimitUsedInputs: Array.from(document.querySelectorAll('input[name="showLimitUsed"]')), liveDotInput: document.getElementById('liveDotInput'), toolIconsInput: document.getElementById('toolIconsInput'), floatingBubbleInput: document.getElementById('floatingBubbleInput'), floatingBubbleTriggerInputs: Array.from(document.querySelectorAll('input[name="floatingBubbleTrigger"]')), floatingBubbleTriggerRow: document.getElementById('floatingBubbleTriggerRow'), floatingBubbleContentInput: document.getElementById('floatingBubbleContentInput'), floatingBubbleContentRow: document.getElementById('floatingBubbleContentRow'), floatingBubbleComposer: document.getElementById('floatingBubbleComposer'), floatingBubbleContent: document.getElementById('floatingBubbleContent'), discordRpcInput: document.getElementById('discordRpcInput'), windowBehaviorInput: document.getElementById('windowBehaviorInput'), keepAboveTaskbarInput: document.getElementById('keepAboveTaskbarInput'), keepAboveTaskbarRow: document.getElementById('keepAboveTaskbarRow'), showTrayIconInput: document.getElementById('showTrayIconInput'), showTrayProviderBadgeInput: document.getElementById('showTrayProviderBadgeInput'), hideAppIconInput: document.getElementById('hideAppIconInput'), hideAppIconRow: document.getElementById('hideAppIconRow'), hideAppIconOptions: document.getElementById('hideAppIconOptions'), trayModeInput: document.getElementById('trayModeInput'), trayContentInput: document.getElementById('trayContentInput'), trayComposer: document.getElementById('trayComposer'), windowToggleShortcutValue: document.getElementById('windowToggleShortcutValue'), windowToggleShortcutClearButton: document.getElementById('windowToggleShortcutClearButton'), windowToggleShortcutNote: document.getElementById('windowToggleShortcutNote'), glassInput: document.getElementById('glassInput'), blurInput: document.getElementById('blurInput'), zoomInput: document.getElementById('zoomInput'), resetGlassButton: document.getElementById('resetGlassButton'), resetDepthButton: document.getElementById('resetDepthButton'), resetZoomButton: document.getElementById('resetZoomButton'), saveSettingsButton: document.getElementById('saveSettingsButton'), clientDisplayList: document.getElementById('clientDisplayList'), wslScanInput: document.getElementById('wslScanInput'), wslScanRow: document.getElementById('wslScanRow'), wslPanel: document.getElementById('wslPanel'), openConfigButton: document.getElementById('openConfigButton'), exportAutoInput: document.getElementById('exportAutoInput'), exportAutoDetails: document.getElementById('exportAutoDetails'), exportAutoStatus: document.getElementById('exportAutoStatus'), exportDirLabel: document.getElementById('exportDirLabel'), exportPickDirButton: document.getElementById('exportPickDirButton'), exportIntervalInput: document.getElementById('exportIntervalInput'), exportNowButton: document.getElementById('exportNowButton'), refreshButton: document.getElementById('refreshButton'), minButton: document.getElementById('minButton'), closeButton: document.getElementById('closeButton'), floatingBubbleTab: document.getElementById('floatingBubbleTab'),
   subscriptionList: document.getElementById('subscriptionList'), subscriptionAddForm: document.getElementById('subscriptionAddForm'), subscriptionAddToggle: document.getElementById('subscriptionAddToggle'), subscriptionAddDetails: document.getElementById('subscriptionAddDetails'), subscriptionProviderInput: document.getElementById('subscriptionProviderInput'), subscriptionAccountInput: document.getElementById('subscriptionAccountInput'), subscriptionPlanNameInput: document.getElementById('subscriptionPlanNameInput'), subscriptionAmountInput: document.getElementById('subscriptionAmountInput'), subscriptionCurrencyInput: document.getElementById('subscriptionCurrencyInput'), subscriptionIntervalCountInput: document.getElementById('subscriptionIntervalCountInput'), subscriptionIntervalInput: document.getElementById('subscriptionIntervalInput'), subscriptionStartDateInput: document.getElementById('subscriptionStartDateInput'), subscriptionAutoRenewInput: document.getElementById('subscriptionAutoRenewInput'), subscriptionNextRenewalInput: document.getElementById('subscriptionNextRenewalInput'), subscriptionNote: document.getElementById('subscriptionNote'), subscriptionOrphanNotice: document.getElementById('subscriptionOrphanNotice'), subscriptionOrphanText: document.getElementById('subscriptionOrphanText'), subscriptionOrphanAdopt: document.getElementById('subscriptionOrphanAdopt'), subscriptionOrphanDiscard: document.getElementById('subscriptionOrphanDiscard'), subscriptionSyncError: document.getElementById('subscriptionSyncError'), subscriptionNextRenewalLabel: document.getElementById('subscriptionNextRenewalLabel'), subscriptionNextRenewalNote: document.getElementById('subscriptionNextRenewalNote'), subscriptionSubmit: document.getElementById('subscriptionSubmit'), subscriptionCancelEdit: document.getElementById('subscriptionCancelEdit'), subscriptionTotalRow: document.getElementById('subscriptionTotalRow'), subscriptionErrorMessage: document.getElementById('subscriptionErrorMessage'), subscriptionPlanFields: document.getElementById('subscriptionPlanFields'), subscriptionTopUpFields: document.getElementById('subscriptionTopUpFields'), subscriptionTopUpList: document.getElementById('subscriptionTopUpList'), subscriptionTopUpDateInput: document.getElementById('subscriptionTopUpDateInput'), subscriptionTopUpAmountInput: document.getElementById('subscriptionTopUpAmountInput'), subscriptionTopUpAddButton: document.getElementById('subscriptionTopUpAddButton'), subscriptionAmountRow: document.getElementById('subscriptionAmountRow'), subscriptionTopUpHeadingRow: document.getElementById('subscriptionTopUpHeadingRow'), subscriptionKindInputs: [...document.querySelectorAll('input[name="subscriptionKind"]')]
 };
 Object.assign(els, {
@@ -385,6 +404,9 @@ Object.assign(els, {
   toolDetailFooter: document.getElementById('toolDetailFooter'),
   toolDetailFooterTokens: document.getElementById('toolDetailFooterTokens'),
   toolDetailFooterModels: document.getElementById('toolDetailFooterModels'),
+  projectBreakdownFooter: document.getElementById('projectBreakdownFooter'),
+  projectBreakdownFooterTools: document.getElementById('projectBreakdownFooterTools'),
+  projectBreakdownFooterModels: document.getElementById('projectBreakdownFooterModels'),
   monthPeriodMenu: document.getElementById('monthPeriodMenu'),
   monthPeriodTab: document.getElementById('monthPeriodTab'),
   periodMonthModeInput: document.getElementById('periodMonthModeInput'),
@@ -396,6 +418,35 @@ Object.assign(els, {
   backHomeButton: document.getElementById('backHomeButton'),
   systemGlassInputs: Array.from(document.querySelectorAll('input[name="systemGlassOption"]')),
   floatingBubbleOptions: document.getElementById('floatingBubbleOptions'),
+  notchFeature: document.getElementById('notchFeature'),
+  notchInput: document.getElementById('notchInput'),
+  notchOptions: document.getElementById('notchOptions'),
+  notchStyleInput: document.getElementById('notchStyleInput'),
+  notchShapeInputs: Array.from(document.querySelectorAll('input[name="notchShape"]')),
+  notchSummaryModeInput: document.getElementById('notchSummaryModeInput'),
+  notchSummaryModeNote: document.getElementById('notchSummaryModeNote'),
+  notchSummaryInput: document.getElementById('notchSummaryInput'),
+  notchWarnColorsInput: document.getElementById('notchWarnColorsInput'),
+  notchComposer: document.getElementById('notchComposer'),
+  notchComposerDetails: document.getElementById('notchComposerDetails'),
+  notchItemsComposer: document.getElementById('notchItemsComposer'),
+  notchRunningIndicatorInput: document.getElementById('notchRunningIndicatorInput'),
+  notchRunningIndicatorRow: document.getElementById('notchRunningIndicatorRow'),
+  notchHapticInput: document.getElementById('notchHapticInput'),
+  notchHoverActionInputs: Array.from(document.querySelectorAll('input[name="notchHoverAction"]')),
+  notchHoverDelayInput: document.getElementById('notchHoverDelayInput'),
+  notchHoverDelayRow: document.getElementById('notchHoverDelayRow'),
+  notchSwipeGesturesInput: document.getElementById('notchSwipeGesturesInput'),
+  resetNotchHoverDelayButton: document.getElementById('resetNotchHoverDelayButton'),
+  notchProgressiveBlurInput: document.getElementById('notchProgressiveBlurInput'),
+  notchHideSummaryInFullScreenInput: document.getElementById('notchHideSummaryInFullScreenInput'),
+  notchSizeInputs: Array.from(document.querySelectorAll('input[name="notchSize"]')),
+  notchCustomScaleInput: document.getElementById('notchCustomScaleInput'),
+  notchCustomScaleRow: document.getElementById('notchCustomScaleRow'),
+  notchMoreOptionsGroup: document.getElementById('notchMoreOptionsGroup'),
+  notchMoreOptionsToggle: document.getElementById('notchMoreOptionsToggle'),
+  notchMoreOptionsDetails: document.getElementById('notchMoreOptionsDetails'),
+  edgeDockComposerRow: document.getElementById('edgeDockComposerRow'),
   edgeDockFeature: document.getElementById('edgeDockFeature'),
   edgeDockInput: document.getElementById('edgeDockInput'),
   edgeDockOptions: document.getElementById('edgeDockOptions'),
@@ -413,6 +464,8 @@ Object.assign(els, {
   edgeDockRunningIndicatorInput: document.getElementById('edgeDockRunningIndicatorInput'),
   edgeDockMacBackdropRow: document.getElementById('edgeDockMacBackdropRow'),
   edgeDockMacBackdropInput: document.getElementById('edgeDockMacBackdropInput'),
+  edgeDockWindowsBackdropRow: document.getElementById('edgeDockWindowsBackdropRow'),
+  edgeDockWindowsBackdropInput: document.getElementById('edgeDockWindowsBackdropInput'),
   edgeDockComposer: document.getElementById('edgeDockComposer'),
   trayIconOptions: document.getElementById('trayIconOptions'),
   trayOptions: document.getElementById('trayOptions'),
@@ -431,6 +484,8 @@ Object.assign(els, {
   syncConnectionCancel: document.getElementById('syncConnectionCancel'),
   syncConnectionSaveError: document.getElementById('syncConnectionSaveError'),
   syncDeviceSettings: document.getElementById('syncDeviceSettings'),
+  deviceIconInput: document.getElementById('deviceIconInput'),
+  deviceIconLocalRow: document.getElementById('deviceIconLocalRow'),
   syncUploadIntervalRow: document.getElementById('syncUploadIntervalRow'),
   hubHostFields: document.getElementById('hubHostFields'),
   hubPortInput: document.getElementById('hubPortInput'),
@@ -461,6 +516,13 @@ Object.assign(els, {
   windowsBackdropNote: document.getElementById('windowsBackdropNote'),
   macBackdropRow: document.getElementById('macBackdropRow'),
   macBackdropInput: document.getElementById('macBackdropInput'),
+  glassOpacityRow: document.getElementById('glassOpacityRow'),
+  macGlassTintRow: document.getElementById('macGlassTintRow'),
+  macGlassTintInput: document.getElementById('macGlassTintInput'),
+  macGlassTintReset: document.getElementById('macGlassTintReset'),
+  macClearGlassTintRow: document.getElementById('macClearGlassTintRow'),
+  macClearGlassTintInput: document.getElementById('macClearGlassTintInput'),
+  macClearGlassTintReset: document.getElementById('macClearGlassTintReset'),
   clearSessionUsageArchiveButton: document.getElementById('clearSessionUsageArchiveButton'),
   startupGroup: document.getElementById('startupGroup'),
   startAtLoginInput: document.getElementById('startAtLoginInput'),
@@ -479,20 +541,20 @@ Object.assign(els, {
   reportIssueButton: document.getElementById('reportIssueButton'),
   appUpdatePill: document.getElementById('appUpdatePill'),
   appUpdatePillAction: document.getElementById('appUpdatePillAction'),
-  appUpdatePillLabel: document.getElementById('appUpdatePillLabel'),
-  appUpdatePillRestart: document.getElementById('appUpdatePillRestart'),
-  appUpdatePillRestartLabel: document.getElementById('appUpdatePillRestartLabel'),
-  appUpdatePillDismiss: document.getElementById('appUpdatePillDismiss'),
+  appUpdatePillProgress: document.getElementById('appUpdatePillProgress'),
   appUpdatePopover: document.getElementById('appUpdatePopover'),
   appUpdatePopoverTitle: document.getElementById('appUpdatePopoverTitle'),
+  appUpdatePopoverSubtitle: document.getElementById('appUpdatePopoverSubtitle'),
   appUpdatePopoverBody: document.getElementById('appUpdatePopoverBody'),
-  appUpdatePopoverAction: document.getElementById('appUpdatePopoverAction'),
-  appUpdatePopoverRelease: document.getElementById('appUpdatePopoverRelease'),
-  appUpdatePopoverClose: document.getElementById('appUpdatePopoverClose'),
+  appUpdatePopoverDismiss: document.getElementById('appUpdatePopoverDismiss'),
   appUpdateInstalled: document.getElementById('appUpdateInstalled'),
   automaticAppUpdatesRow: document.getElementById('automaticAppUpdatesRow'),
   automaticAppUpdatesInput: document.getElementById('automaticAppUpdatesInput'),
   automaticAppUpdatesNote: document.getElementById('automaticAppUpdatesNote'),
+  proxyUrlInput: document.getElementById('proxyUrlInput'),
+  noProxyInput: document.getElementById('noProxyInput'),
+  networkProxySource: document.getElementById('networkProxySource'),
+  proxyUrlError: document.getElementById('proxyUrlError'),
   appUpdateLatest: document.getElementById('appUpdateLatest'),
   appUpdateCheckButton: document.getElementById('appUpdateCheckButton'),
   appUpdateViewReleaseButton: document.getElementById('appUpdateViewReleaseButton'),
@@ -501,7 +563,6 @@ Object.assign(els, {
   appUpdateNotesDetails: document.getElementById('appUpdateNotesDetails'),
   appUpdateNotesTitle: document.getElementById('appUpdateNotesTitle'),
   appUpdateNotesBody: document.getElementById('appUpdateNotesBody'),
-  appUpdateReleaseNotesButton: document.getElementById('appUpdateReleaseNotesButton'),
   appUpdateMessage: document.getElementById('appUpdateMessage'),
   titleIconInput: document.getElementById('titleIconInput'),
   tokenNumberAnimationInput: document.getElementById('tokenNumberAnimationInput'),
@@ -526,6 +587,7 @@ Object.assign(els, {
   mainSettingsSummary: document.getElementById('mainSettingsSummary'),
   windowSettingsSummary: document.getElementById('windowSettingsSummary'),
   appearanceSettingsSummary: document.getElementById('appearanceSettingsSummary'),
+  pluginsSettingsSummary: document.getElementById('pluginsSettingsSummary'),
   backgroundImageStatus: document.getElementById('backgroundImageStatus'),
   chooseBackgroundImageButton: document.getElementById('chooseBackgroundImageButton'),
   clearBackgroundImageButton: document.getElementById('clearBackgroundImageButton'),
@@ -588,6 +650,9 @@ const syncModeSelect = window.TokenMonitorSelectControl?.enhance(els.hubModeOpti
   getOptionMeta: option => ({ description: t(SYNC_MODE_DESCRIPTIONS[option.value]), icon: syncModeIcons[option.value] })
 });
 window.addEventListener('unload', () => syncModeSelect?.destroy(), { once: true });
+window.addEventListener('unload', () => {
+  for (const select of document.querySelectorAll('.device-icon-select, #deviceIconInput')) deviceIconsApi.destroyDeviceIconSelect(select);
+}, { once: true });
 
 function toggleAccordionRow(row) {
   const isExpanded = row.classList.contains('expanded');
@@ -601,6 +666,7 @@ function toggleAccordionRow(row) {
     renderActiveToolDetail();
   }
   renderToolDetailFooter();
+  renderProjectBreakdownFooter();
 }
 
 document.addEventListener('click', (event) => {
@@ -618,6 +684,8 @@ document.addEventListener('keydown', (event) => {
 
 els.toolDetailFooterTokens.addEventListener('click', () => setActiveToolDetailMode('tokens'));
 els.toolDetailFooterModels.addEventListener('click', () => setActiveToolDetailMode('models'));
+els.projectBreakdownFooterTools.addEventListener('click', () => { void saveSettings({ projectBreakdownMode: 'tool' }).catch(() => {}); });
+els.projectBreakdownFooterModels.addEventListener('click', () => { void saveSettings({ projectBreakdownMode: 'model' }).catch(() => {}); });
 
 document.addEventListener('pointerdown', (event) => {
   if (state.viewSwitcherOpen && !event.target.closest('#viewSwitcher')) {
@@ -694,6 +762,8 @@ const codexAccountControl = codexAccountControlApi.createCodexAccountControl({
   }
 });
 
+window.TokenMonitorContentBlur.create({ document, window, root: els.shell });
+
 const diagnosticsPanel = window.TokenMonitorDiagnosticsPanel?.createDiagnosticsPanel({
   api: window.tokenMonitor,
   translate: t,
@@ -717,6 +787,8 @@ function applySettingsTranslations() {
   setSubscriptionFormMode();
   diagnosticsPanel?.render();
 }
+
+let displaySettings = null;
 
 function applySettingsSectionDom(id, open) {
   if (id === 'sync' && !open) { syncModeSelect?.close(); syncContentForm?.closeHelp(); }
@@ -742,6 +814,7 @@ function setSettingsSectionExpanded(section, expanded) {
   state.settingsSections[id] = next;
   applySettingsSectionDom(id, next);
   if (id === 'sync' && next) void syncContentForm?.refresh();
+  if (id === 'plugins' && next) void pluginSettingsPanel?.refresh().then(renderSettingsSummaries);
 }
 
 // Expanding a section auto-collapses the previously open one. When that one
@@ -836,6 +909,12 @@ function viewsSummary() {
 
 function settingsSectionSummary(section) {
   if (!state.settings) return '';
+  if (section === 'plugins') {
+    const plugins = state.pluginCatalog?.plugins || [];
+    const summary = state.settings.pluginsEnabled === false ? t('settings.summary.off') : plugins.length
+      ? t('settings.summary.plugins', { active: plugins.filter((plugin) => plugin.status === 'active').length, total: plugins.length }) : '';
+    return [summary, pluginUpdateCount ? t('plugins.catalog.updatesAvailable', { count: pluginUpdateCount }) : ''].filter(Boolean).join(' · ');
+  }
   if (section === 'sync') {
     const modeKeys = { host: 'settings.sync.hostHub', client: 'settings.sync.connectHub', icloud: 'settings.sync.icloud' };
     const label = t(modeKeys[state.settings.hubMode] || 'settings.sync.localOnly');
@@ -1003,6 +1082,11 @@ function displayLiveTokenRateItems() {
       enabled: state.settings?.floatingBubbleEnabled === true,
       content: state.settings?.floatingBubbleContent,
       layout: state.settings?.floatingBubbleCustomLayout
+    },
+    {
+      enabled: state.appInfo?.platform === 'darwin' && state.settings?.notchEnabled === true && state.settings?.notchSummaryMode === 'custom',
+      content: 'custom',
+      layout: state.settings?.notchCustomLayout
     }
   ]);
 }
@@ -1186,7 +1270,6 @@ function renderLiveTokenRate() {
     cell.classList.add('live-token-rate-model-name');
     cell.replaceChildren(icon, name);
   }
-  if (!detailEntries.length) els.liveTokenRate.title = label;
   els.liveTokenRate.setAttribute('aria-label', [label, ...detailEntries.map((entry) =>
     Array.isArray(entry) ? entry.join(': ') : entry.full)].join(', '));
   syncLiveTokenRateFooterState();
@@ -1209,6 +1292,7 @@ function syncLiveTokenRateFooterState() {
   if (!footer) return;
   const enabled = state.settings?.showLiveTokenRate === true;
   const obscured = !els.toolDetailFooter?.classList.contains('hidden')
+    || !els.projectBreakdownFooter?.classList.contains('hidden')
     || !els.appUpdatePill?.classList.contains('hidden');
   footer.classList.toggle('live-token-rate-enabled', enabled);
   footer.classList.toggle('live-token-rate-obscured', enabled && obscured);
@@ -1392,6 +1476,14 @@ function formatActiveDuration(ms) {
 function versionText(value) {
   return value ? `v${value}` : 'unknown';
 }
+// The release-note card under the footer update button. It opens on hover the
+// way a tooltip does, because the button's own press is the update action.
+const APP_UPDATE_CARD_OPEN_DELAY_MS = 250;
+const APP_UPDATE_CARD_CLOSE_DELAY_MS = 150;
+let appUpdateCardOpenTimer = 0;
+let appUpdateCardCloseTimer = 0;
+let suppressAppUpdateCardFocusOpen = false;
+
 function setAppUpdatePillDisclosure(available) {
   const action = els.appUpdatePillAction;
   if (available) {
@@ -1404,59 +1496,69 @@ function setAppUpdatePillDisclosure(available) {
   action.removeAttribute('aria-controls');
   action.removeAttribute('aria-expanded');
 }
+function appUpdatePillStatus(s, mode) {
+  if (s.installStarting) return 'installing';
+  // A download starts with a fresh provider check, reported as `checking`.
+  if (s.installPhase === 'downloading' || (s.installPhase === 'checking' && s.installBusy)) return 'downloading';
+  if (mode === 'install') return 'downloaded';
+  if (mode === 'release') return 'release';
+  return 'available';
+}
+function appUpdateDownloadPercent(s) {
+  return s?.installPhase === 'downloading' && Number.isFinite(s.installProgress)
+    ? Math.max(0, Math.min(100, Math.round(s.installProgress)))
+    : 0;
+}
+function appUpdatePillLabel(status, percent) {
+  if (status === 'downloading') return t('settings.appUpdate.downloading', { percent });
+  if (status === 'downloaded') return t('settings.appUpdate.restart');
+  if (status === 'installing') return t('settings.appUpdate.installStarting');
+  if (status === 'release') return t('settings.appUpdate.viewRelease');
+  return t('settings.appUpdate.download');
+}
 function renderAppUpdatePill() {
   const s = state.appUpdate;
   const pill = els.appUpdatePill;
   if (!pill) return;
+  const action = els.appUpdatePillAction;
   const mode = appUpdatePresentationApi.appUpdateActionMode(s);
   const version = s?.latest?.version || s?.installVersion || '';
   if (!s || !mode || !version || !s.showUpdateNotice) {
     pill.classList.add('hidden');
-    pill.classList.remove('is-ready');
-    pill.setAttribute('title', '');
-    els.appUpdatePillLabel.textContent = '';
-    els.appUpdatePillAction.removeAttribute('title');
-    els.appUpdatePillAction.removeAttribute('aria-label');
-    els.appUpdatePillAction.disabled = false;
-    els.appUpdatePillRestart.classList.add('hidden');
-    els.appUpdatePillRestartLabel.textContent = '';
-    els.appUpdatePillRestart.disabled = false;
-    els.appUpdatePillRestart.removeAttribute('title');
-    els.appUpdatePillRestart.removeAttribute('aria-label');
+    hideAppUpdatePopover();
+    action.removeAttribute('aria-label');
+    action.removeAttribute('aria-disabled');
     setAppUpdatePillDisclosure(false);
     syncLiveTokenRateFooterState();
     return;
   }
-  const hasReleaseNotes = releaseNoteGroupsForCurrentLocale(s.latest).length > 0;
-  setAppUpdatePillDisclosure(hasReleaseNotes);
+  const status = appUpdatePillStatus(s, mode);
+  const percent = appUpdateDownloadPercent(s);
   pill.classList.remove('hidden');
-  pill.classList.toggle('is-ready', mode === 'install');
-  els.appUpdatePillDismiss.classList.toggle('hidden', mode === 'install' || s.installBusy);
-  pill.setAttribute('title', '');
-  const releaseLabel = hasReleaseNotes
-    ? t('settings.appUpdate.whatsNew', { version })
-    : (s.latest?.name || `v${version}`);
-  els.appUpdatePillAction.setAttribute('title', releaseLabel);
-  els.appUpdatePillAction.setAttribute('aria-label', releaseLabel);
-  els.appUpdatePillAction.disabled = mode === 'install' && !hasReleaseNotes && !s.latest?.htmlUrl;
-  els.appUpdatePillRestart.classList.toggle('hidden', mode !== 'install');
-  els.appUpdatePillRestart.disabled = Boolean(s.installBusy);
-  els.appUpdatePillRestartLabel.textContent = mode === 'install'
-    ? t('settings.appUpdate.restartShort')
-    : '';
-  els.appUpdatePillRestart.setAttribute('title', t('settings.appUpdate.ready'));
-  els.appUpdatePillRestart.setAttribute('aria-label', t('settings.appUpdate.restart'));
-  if (s.installPhase === 'downloading' && Number.isFinite(s.installProgress)) {
-    els.appUpdatePillLabel.textContent = `${Math.round(s.installProgress)}%`;
-  } else {
-    els.appUpdatePillLabel.textContent = mode === 'install'
-      ? `v${version}`
-      : `↑ v${version}`;
-  }
+  action.dataset.status = status;
+  els.appUpdatePillProgress.style.strokeDashoffset = String(100 - percent);
+  action.setAttribute('aria-label', appUpdatePillLabel(status, percent));
+  // aria-disabled rather than disabled: a disabled button stops receiving the
+  // pointer events that open the card, which is where the progress is shown.
+  if (s.installBusy) action.setAttribute('aria-disabled', 'true');
+  else action.removeAttribute('aria-disabled');
+  setAppUpdatePillDisclosure(true);
   syncLiveTokenRateFooterState();
 }
-function releaseNoteGroupsForCurrentLocale(latest) {
-  return appUpdatePresentationApi.releaseNoteGroupsForLocale(latest?.releaseNotes, currentLocale());
+function releaseNoteHistoryForCurrentLocale(latest) {
+  return appUpdatePresentationApi.releaseNoteHistoryForLocale(latest, currentLocale());
+}
+function buildAppUpdateNoteItemNode(item) {
+  const row = document.createElement('li');
+  const { lead, body } = appUpdatePresentationApi.splitReleaseNoteLead(item);
+  if (!lead) {
+    row.textContent = body;
+    return row;
+  }
+  const strong = document.createElement('strong');
+  strong.textContent = lead;
+  row.append(strong, document.createTextNode(/[:]$/.test(lead) ? ` ${body}` : body));
+  return row;
 }
 function buildAppUpdateNoteGroupNodes(groups) {
   return groups.map((group) => {
@@ -1467,58 +1569,169 @@ function buildAppUpdateNoteGroupNodes(groups) {
     title.textContent = String(group?.title || '');
     const list = document.createElement('ul');
     for (const item of Array.isArray(group?.items) ? group.items : []) {
-      const row = document.createElement('li');
-      row.textContent = String(item || '');
-      list.append(row);
+      list.append(buildAppUpdateNoteItemNode(String(item || '')));
     }
     section.append(title, list);
     return section;
   });
 }
+function buildAppUpdateReleaseLink(className, label, url) {
+  const link = document.createElement('button');
+  link.type = 'button';
+  link.className = `${className} app-update-release-link`;
+  link.dataset.releaseUrl = url;
+  link.textContent = label;
+  return link;
+}
+// One section per release, newest first. A single release is already named by the
+// heading above it, so it goes without its own version line.
+function buildAppUpdateReleaseNodes(entries) {
+  const showVersions = entries.length > 1;
+  return entries.map((entry) => {
+    const section = document.createElement('section');
+    section.className = 'app-update-release';
+    if (showVersions) {
+      const label = `v${entry.version}`;
+      const head = entry.htmlUrl
+        ? buildAppUpdateReleaseLink('app-update-release-version', label, entry.htmlUrl)
+        : Object.assign(document.createElement('div'), { className: 'app-update-release-version', textContent: label });
+      if (entry.htmlUrl) head.setAttribute('aria-description', t('settings.appUpdate.viewFullRelease'));
+      // A wrapper, because a stuck scroll-state container styles its descendants,
+      // not itself.
+      const wrapper = document.createElement('div');
+      wrapper.className = 'app-update-release-head';
+      wrapper.append(head);
+      section.append(wrapper);
+    }
+    // Every item: these are written summaries, so cutting them short hides whole
+    // groups (a release's fixes come last) rather than trimming noise.
+    section.append(...buildAppUpdateNoteGroupNodes(entry.groups));
+    return section;
+  });
+}
+function buildAppUpdateReleaseHistoryNodes(s) {
+  const history = releaseNoteHistoryForCurrentLocale(s?.latest);
+  const entries = history
+    .filter((entry, _index, all) => all.length > 1 || entry.groups.length > 0);
+  const nodes = buildAppUpdateReleaseNodes(entries);
+  // A single release has no version heading to open its page, so it gets an
+  // explicit link after its notes — even when the locale carries no groups and
+  // the link is the body's only node.
+  if (history.length === 1 && history[0]?.htmlUrl) {
+    nodes.push(buildAppUpdateReleaseLink('app-update-release-full', t('settings.appUpdate.viewFullRelease'), history[0].htmlUrl));
+  }
+  if (nodes.length > 0 && s?.latest?.releaseHistoryTruncated && s.releasesUrl) {
+    nodes.push(buildAppUpdateReleaseLink('app-update-release-older', t('settings.appUpdate.olderReleases'), s.releasesUrl));
+  }
+  return { entries, nodes };
+}
+// Download progress pushes many times a second. Rebuilding the notes on each one
+// would reset the reader's scroll position, so they are rebuilt only when what
+// they say changes.
+function appUpdateNotesContentKey(s) {
+  return JSON.stringify([currentLocale(), s?.currentVersion || '', s?.latest?.version || '', s?.latest?.releaseNoteHistory || null, s?.latest?.releaseNotes || null, Boolean(s?.latest?.releaseHistoryTruncated)]);
+}
+// The card explains; the button under it acts. A second action button in the
+// card only repeated the one the pointer had just passed over.
 function renderAppUpdatePopover(s) {
-  const version = s?.latest?.version || '';
-  const groups = releaseNoteGroupsForCurrentLocale(s?.latest);
   const mode = appUpdatePresentationApi.appUpdateActionMode(s);
-  if (!version || groups.length === 0 || !mode) {
-    if (els.appUpdatePopover.matches(':popover-open')) els.appUpdatePopover.hidePopover();
-    els.appUpdatePopoverTitle.textContent = '';
-    els.appUpdatePopoverBody.replaceChildren();
+  const version = s?.latest?.version || s?.installVersion || '';
+  if (!s || !mode || !version) {
+    hideAppUpdatePopover();
     return false;
   }
-  els.appUpdatePopoverTitle.textContent = t('settings.appUpdate.whatsNew', { version });
-  els.appUpdatePopoverBody.replaceChildren(...buildAppUpdateNoteGroupNodes(groups));
-  els.appUpdatePopoverAction.textContent = mode === 'install'
-    ? t('settings.appUpdate.restart')
-    : mode === 'download'
-      ? t('settings.appUpdate.download')
-      : t('settings.appUpdate.viewRelease');
-  els.appUpdatePopoverAction.disabled = Boolean(s.installBusy);
-  els.appUpdatePopoverRelease.classList.toggle('hidden', !s.latest?.htmlUrl);
+  const status = appUpdatePillStatus(s, mode);
+  const percent = appUpdateDownloadPercent(s);
+  const heading = {
+    available: [t('settings.appUpdate.availableTitle', { version }), t('settings.appUpdate.currentVersion', { version: s.currentVersion })],
+    release: [t('settings.appUpdate.availableTitle', { version }), t('settings.appUpdate.currentVersion', { version: s.currentVersion })],
+    downloading: [t('settings.appUpdate.downloading', { percent }), `v${version}`],
+    downloaded: [t('settings.appUpdate.readyTitle', { version }), t('settings.appUpdate.ready')],
+    installing: [t('settings.appUpdate.installStarting'), `v${version}`]
+  }[status];
+  els.appUpdatePopoverTitle.textContent = heading[0];
+  els.appUpdatePopoverSubtitle.textContent = heading[1];
+  const contentKey = appUpdateNotesContentKey(s);
+  if (els.appUpdatePopoverBody.dataset.contentKey !== contentKey) {
+    const { nodes } = buildAppUpdateReleaseHistoryNodes(s);
+    els.appUpdatePopoverBody.replaceChildren(...nodes);
+    els.appUpdatePopoverBody.dataset.contentKey = contentKey;
+    els.appUpdatePopoverBody.classList.toggle('hidden', nodes.length === 0);
+  }
+  els.appUpdatePopoverDismiss.classList.toggle('hidden', mode === 'install' || Boolean(s.installBusy));
   return true;
 }
 function positionAppUpdatePopover() {
   const rect = els.appUpdatePill.getBoundingClientRect();
   const width = Math.min(320, window.innerWidth - 24);
   const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.right - width));
+  const bottom = Math.max(12, window.innerHeight - rect.top + 8);
   els.appUpdatePopover.style.width = `${width}px`;
   els.appUpdatePopover.style.left = `${left}px`;
-  els.appUpdatePopover.style.bottom = `${Math.max(12, window.innerHeight - rect.top + 8)}px`;
+  els.appUpdatePopover.style.bottom = `${bottom}px`;
+  els.appUpdatePopover.style.maxHeight = `${appUpdatePresentationApi.appUpdatePopoverMaxHeight({ viewportHeight: window.innerHeight, bottom })}px`;
+}
+function clearAppUpdateCardTimers() {
+  clearTimeout(appUpdateCardOpenTimer);
+  clearTimeout(appUpdateCardCloseTimer);
+  appUpdateCardOpenTimer = 0;
+  appUpdateCardCloseTimer = 0;
+}
+function showAppUpdatePopover() {
+  clearAppUpdateCardTimers();
+  if (els.appUpdatePill.classList.contains('hidden') || typeof els.appUpdatePopover.showPopover !== 'function') return false;
+  if (!renderAppUpdatePopover(state.appUpdate)) return false;
+  positionAppUpdatePopover();
+  if (!els.appUpdatePopover.matches(':popover-open')) els.appUpdatePopover.showPopover();
+  return true;
+}
+function hideAppUpdatePopover() {
+  clearAppUpdateCardTimers();
+  if (!els.appUpdatePopover?.matches(':popover-open')) return;
+  // Only focus that was inside the card goes back to the button. A card that
+  // closes because the pointer left it must not pull focus to the button.
+  const focusWasInside = els.appUpdatePopover.contains(document.activeElement);
+  els.appUpdatePopover.hidePopover();
+  if (focusWasInside && !els.appUpdatePill.classList.contains('hidden')) {
+    suppressAppUpdateCardFocusOpen = true;
+    els.appUpdatePillAction.focus();
+  }
+}
+function scheduleAppUpdatePopoverOpen() {
+  clearAppUpdateCardTimers();
+  if (els.appUpdatePopover.matches(':popover-open')) return;
+  appUpdateCardOpenTimer = setTimeout(showAppUpdatePopover, APP_UPDATE_CARD_OPEN_DELAY_MS);
+}
+function scheduleAppUpdatePopoverClose() {
+  clearAppUpdateCardTimers();
+  appUpdateCardCloseTimer = setTimeout(() => {
+    appUpdateCardCloseTimer = 0;
+    // Keyboard focus inside the card holds it open until focus leaves.
+    if (els.appUpdatePopover.contains(document.activeElement)) return;
+    hideAppUpdatePopover();
+  }, APP_UPDATE_CARD_CLOSE_DELAY_MS);
 }
 function renderAppUpdateNotes(s) {
   const version = s?.latest?.version || '';
-  const groups = releaseNoteGroupsForCurrentLocale(s?.latest);
-  const visible = Boolean(version && groups.length > 0);
-  els.appUpdateNotes.classList.toggle('hidden', !visible);
-  if (!visible) {
-    setSettingsAccordionExpanded(els.appUpdateNotes, els.appUpdateNotesToggle, els.appUpdateNotesDetails, false);
-    els.appUpdateNotesTitle.textContent = '';
-    els.appUpdateNotesBody.replaceChildren();
-    return;
-  }
+  const contentKey = appUpdateNotesContentKey(s);
+  if (els.appUpdateNotesBody.dataset.contentKey !== contentKey) {
+    const { entries, nodes } = version ? buildAppUpdateReleaseHistoryNodes(s) : { entries: [], nodes: [] };
+    const visible = Boolean(version && nodes.length > 0);
+    els.appUpdateNotes.classList.toggle('hidden', !visible);
+    if (!visible) {
+      setSettingsAccordionExpanded(els.appUpdateNotes, els.appUpdateNotesToggle, els.appUpdateNotesDetails, false);
+      els.appUpdateNotesTitle.textContent = '';
+      els.appUpdateNotesBody.replaceChildren();
+      delete els.appUpdateNotesBody.dataset.contentKey;
+      return;
+    }
 
-  els.appUpdateNotesTitle.textContent = t('settings.appUpdate.whatsNew', { version });
-  els.appUpdateNotesBody.replaceChildren(...buildAppUpdateNoteGroupNodes(groups));
-  els.appUpdateReleaseNotesButton.classList.toggle('hidden', !s.latest?.htmlUrl);
+    els.appUpdateNotesTitle.textContent = entries.length > 1
+      ? t('settings.appUpdate.changesSince', { version: s.currentVersion })
+      : t('settings.appUpdate.whatsNew', { version });
+    els.appUpdateNotesBody.replaceChildren(...nodes);
+    els.appUpdateNotesBody.dataset.contentKey = contentKey;
+  }
   if (s.hasUpdate && state.appUpdateNotesPresentedVersion !== version) {
     // The disclosure may have just changed from display:none. Commit its
     // collapsed grid once so the first automatic reveal can transition too.
@@ -1595,6 +1808,66 @@ function renderSettingsAppUpdateRow() {
     els.appUpdateMessage.textContent = '';
     els.appUpdateMessage.classList.remove('error');
   }
+}
+
+// Per-field edit state. `dirty` keeps a settings push from overwriting text
+// that has not been stored (an edit in progress or a refused value), and the
+// revision lets a save that finishes after a newer edit leave that edit alone.
+const networkProxyDrafts = {
+  proxyUrl: { revision: 0, dirty: false },
+  noProxy: { revision: 0, dirty: false }
+};
+// The last refused save, kept until that field is edited again so the next
+// settings push does not wipe the reason off screen.
+let networkProxyError = null;
+const PROXY_SETTING_ERROR_CODES = ['proxy_invalid_url', 'proxy_unsupported_scheme', 'proxy_credentials_unsupported', 'proxy_bypass_unsupported', 'proxy_bypass_too_long'];
+
+function networkProxyInput(field) {
+  return field === 'proxyUrl' ? els.proxyUrlInput : els.noProxyInput;
+}
+
+function syncNetworkProxyControls() {
+  if (!els.proxyUrlInput) return;
+  for (const field of Object.keys(networkProxyDrafts)) {
+    const input = networkProxyInput(field);
+    if (input && document.activeElement !== input && !networkProxyDrafts[field].dirty) {
+      input.value = state.settings?.[field] || '';
+    }
+  }
+  if (els.networkProxySource) {
+    const source = state.settings?.networkProxySource || 'system';
+    els.networkProxySource.textContent = t(`settings.proxy.source.${source}`);
+  }
+  if (els.proxyUrlError) {
+    els.proxyUrlError.hidden = !networkProxyError;
+    els.proxyUrlError.textContent = networkProxyError ? t(`settings.proxy.error.${networkProxyError.code}`) : '';
+  }
+}
+
+function markNetworkProxyDraft(field) {
+  networkProxyDrafts[field].revision += 1;
+  networkProxyDrafts[field].dirty = true;
+  if (networkProxyError?.field !== field) return;
+  networkProxyError = null;
+  syncNetworkProxyControls();
+}
+
+async function saveNetworkProxySetting(field) {
+  const draft = networkProxyDrafts[field];
+  const revision = draft.revision;
+  let code = '';
+  try {
+    await saveSettings({ [field]: networkProxyInput(field).value });
+  } catch (error) {
+    const message = String(error?.message || '');
+    code = PROXY_SETTING_ERROR_CODES.find((candidate) => message.includes(candidate)) || 'save_failed';
+  }
+  // A newer edit owns the field now; this outcome no longer describes it.
+  if (draft.revision !== revision) return;
+  // A refused value stays dirty, so it is left in place to be corrected.
+  draft.dirty = Boolean(code);
+  networkProxyError = code ? { field, code } : (networkProxyError?.field === field ? null : networkProxyError);
+  preserveSettingsPanelScroll(syncNetworkProxyControls);
 }
 
 function renderAutomaticAppUpdateControl() {
@@ -1763,6 +2036,7 @@ function settleRowNumberAnimations() {
 function applyReduceMotionPreference(value) {
   const preference = motionPreferenceApi.normalize(value);
   document.documentElement.dataset.reduceMotion = preference;
+  pluginViewHost?.refreshMotion();
   if (motionPreferenceApi.shouldReduceMotion(preference, reducedMotionMedia?.matches)) settleMotionAnimations();
   return preference;
 }
@@ -2091,7 +2365,7 @@ function rowTemplate(rowData) {
   // `.row-live` is absolutely positioned over the mark's corner and `.row-context`
   // is the third metrics line; both stay empty and hidden on every row that is
   // not a live session, so the shared template keeps building one shape.
-  row.innerHTML = `<div class="row-head"><div class="row-name"><span class="row-mark"></span><span class="row-live" aria-hidden="true">${rowLiveMarkup}</span><div class="row-label"><span class="row-title"></span><span class="row-subtitle"></span><span class="row-activity"></span><span class="row-detail"></span></div></div><div class="row-metrics"><div class="row-value"></div><div class="row-cost"></div><div class="row-context hidden"><span class="row-context-meter"><span class="row-context-fill"></span></span><span class="row-context-value"></span></div></div></div><div class="row-body"><div class="bar"><div class="bar-fill"></div></div><div class="row-accordion"><div class="row-accordion-inner"></div></div></div>`;
+  row.innerHTML = `<div class="row-head"><div class="row-name"><span class="row-mark"></span><span class="row-live" aria-hidden="true">${rowLiveMarkup}</span><div class="row-label"><span class="row-title"></span><span class="row-subtitle"></span><span class="row-activity"></span><span class="row-device hidden"></span><span class="row-detail"></span></div></div><div class="row-metrics"><div class="row-value"></div><div class="row-cost"></div><div class="row-context hidden"><span class="row-context-meter"><span class="row-context-fill"></span></span><span class="row-context-value"></span></div></div></div><div class="row-body"><div class="bar"><div class="bar-fill"></div></div><div class="row-accordion"><div class="row-accordion-inner"></div></div></div>`;
   row.querySelector('.row-title').textContent = name;
   row.querySelector('.row-subtitle').textContent = subtitle || '';
   row.querySelector('.row-activity').textContent = activity || '';
@@ -2099,6 +2373,7 @@ function rowTemplate(rowData) {
   bindHoverMarquee(row.querySelector('.row-title'));
   bindHoverMarquee(row.querySelector('.row-subtitle'));
   bindHoverMarquee(row.querySelector('.row-activity'));
+  bindHoverMarquee(row.querySelector('.row-device'));
   bindHoverMarquee(row.querySelector('.row-detail'));
   return row;
 }
@@ -2397,6 +2672,22 @@ function setActiveToolDetailMode(mode) {
   renderToolDetailFooter();
 }
 
+function renderProjectBreakdownFooter() {
+  const active = visibleStatsSurface() === 'main'
+    && state.breakdown === 'project'
+    && !els.breakdown.classList.contains('hidden')
+    && Boolean(els.breakdown.querySelector('.row.expanded .row-accordion-inner'));
+  els.projectBreakdownFooter.classList.toggle('hidden', !active);
+  syncLiveTokenRateFooterState();
+  if (!active) return;
+  const mode = state.settings?.projectBreakdownMode === 'model' ? 'model' : 'tool';
+  els.projectBreakdownFooter.setAttribute('aria-label', t('views.project'));
+  els.projectBreakdownFooterTools.textContent = t('views.tool');
+  els.projectBreakdownFooterModels.textContent = t('views.model');
+  els.projectBreakdownFooterTools.setAttribute('aria-pressed', String(mode === 'tool'));
+  els.projectBreakdownFooterModels.setAttribute('aria-pressed', String(mode === 'model'));
+}
+
 // The live-session pair: a dot on the tool mark for "this is being written to
 // right now", and a fuel gauge for how much of its context window is left. The
 // dot is drawn only while the agent is working and the gauge only while the
@@ -2454,10 +2745,9 @@ function updateRowLive(row, activityState, activityAt) {
   const active = activityState === 'running';
   dot.classList.toggle('is-active', active);
   dot.classList.toggle('is-waiting', activityState === 'waiting');
-  dot.title = activityState === 'waiting' ? t('session.waiting') : active ? (t('session.running') || 'Running') : '';
-  dot.setAttribute('aria-label', dot.title);
+  dot.setAttribute('aria-label', activityState === 'waiting' ? t('session.waiting') : active ? (t('session.running') || 'Running') : '');
   dot.setAttribute('role', 'img');
-  dot.setAttribute('aria-hidden', dot.title ? 'false' : 'true');
+  dot.setAttribute('aria-hidden', activityState === 'waiting' || active ? 'false' : 'true');
   const previous = Number(row.dataset.activityAt || 0);
   const next = Number(activityAt) || 0;
   if (next > 0) row.dataset.activityAt = String(next);
@@ -2469,14 +2759,14 @@ function updateRowLive(row, activityState, activityAt) {
   dot.classList.add('pulse');
 }
 
-function updateRow(row, { name, subtitle, subtitleIdentity, subagentCountLabel, activity, detail, value, cost, unpricedTokens, barValue, max, color, barBackground, accordionRows, deviceDetail, stale, platform, local, client, kind, modelSource, cacheReadTokens, outputTokens, unclassifiedTokens, modelRows, modelLabel, modelTooltipEntries, titleModelLabel, tokenDataUnavailable, sessionDetailAvailable, sessionGroup, running, activityState, context, promptCache, contextSnapshot, sortTime }) {
+function updateRow(row, { name, subtitle, subtitleIdentity, subagentCountLabel, activity, detail, value, cost, unpricedTokens, barValue, max, color, barBackground, accordionRows, deviceDetail, stale, platform, local, client, clientLabel, sourceDevice, kind, modelSource, cacheReadTokens, outputTokens, unclassifiedTokens, modelRows, modelLabel, modelTooltipEntries, titleModelLabel, reasoningEffort, tokenDataUnavailable, sessionDetailAvailable, sessionGroup, running, activityState, context, promptCache, contextSnapshot, sortTime }) {
   const width = rowWidth(barValue, max);
   const isExpanded = row.classList.contains('expanded');
   // `running` still drives the row class for layout, but the mark's own state
   // comes from `activityState`, which is what reads the transcript's turn-end
   // boundary rather than only the recency window.
   row.className = `row${kind ? ` ${kind}-row` : ''}${stale ? ' stale' : ''}${local ? ' local' : ''}${running ? ' running' : ''}`;
-  row.title = local ? 'This device' : '';
+  row.setAttribute('aria-description', local ? 'This device' : '');
   
   if (cacheReadTokens !== undefined || outputTokens !== undefined || unclassifiedTokens !== undefined) {
     row.dataset.cacheRead = cacheReadTokens || 0;
@@ -2523,53 +2813,71 @@ function updateRow(row, { name, subtitle, subtitleIdentity, subagentCountLabel, 
       content.replaceChildren(subtitleTextEl, count);
       bindHoverMarquee(subtitleTextEl);
     }
-    subtitleEl.querySelector('.session-subagent-count').textContent = `${subtitleIdentity ? ' · ' : ''}${subagentCountLabel}`;
+  }
+  const subtitleText = sessionRowsApi.sessionSubtitleForDisplay(
+    { client, clientLabel }, splitSubtitle ? subtitleIdentity || '' : subtitle,
+    { keepClient: iconKind.kind !== 'icon' }
+  );
+  if (splitSubtitle) {
+    subtitleEl.querySelector('.session-subagent-count').textContent = `${subtitleText ? ' · ' : ''}${subagentCountLabel}`;
     overflowText.update(subtitleEl);
   }
-  const subtitleText = splitSubtitle ? subtitleIdentity || '' : subtitle;
   // A multi-model session abbreviates to "N models"; that label opens the same
   // tooltip the context gauge carries, one row per model with its tokens and
   // share of the session. A titled row prints the label inside the
-  // client · model line, so the trigger is just the "N models" span; an
-  // untitled row folds it into the title instead, whose whole text then opens
-  // the tooltip. The trigger mirrors the row's own wording rather than adding
-  // chrome, so there is nothing extra on a single-model row. A review heading
-  // explicitly identifies its model span before the trailing time.
+  // client · model line; untitled rows fold it into the title instead. Both
+  // use the shared model/effort node so each label keeps its own tooltip.
+  // A review heading explicitly identifies its model span before the time.
   const modelEntries = Array.isArray(modelTooltipEntries) && modelTooltipEntries.length > 1
     ? modelTooltipEntries : null;
-  const subtitleShowsModel = Boolean(!titleModelLabel && modelEntries && modelLabel && String(subtitleText || '').endsWith(modelLabel));
+  const metadataRow = { client, modelLabel: modelLabel || '', modelTooltipEntries: modelTooltipEntries || [], reasoningEffort };
+  const metadataLabel = sessionRowsApi.sessionModelMetadataLabel(metadataRow);
+  const hasMetadata = Boolean(modelEntries || sessionRowsApi.sessionReasoningEffortForRow(metadataRow));
+  const replaceMetadata = (element, text, start) => {
+    const content = element.querySelector('.overflow-text-content') || element;
+    content.replaceChildren(document.createTextNode(text.slice(0, start)),
+      sessionRowsApi.sessionModelMetadataNode(document, metadataRow, { translate: t, view: limitWindowsView }),
+      document.createTextNode(text.slice(start + metadataLabel.length)));
+    overflowText.update(element);
+  };
+  const subtitleShowsModel = Boolean(!titleModelLabel && hasMetadata && metadataLabel && String(subtitleText || '').endsWith(metadataLabel));
   if (subtitleShowsModel) {
-    const models = document.createElement('span');
-    models.className = 'session-models';
-    models.textContent = modelLabel;
-    // Inside the marquee's own wrapper, so a long line still scrolls on hover.
-    const subtitleContent = subtitleTextEl.querySelector('.overflow-text-content') || subtitleTextEl;
-    subtitleContent.replaceChildren(document.createTextNode(subtitleText.slice(0, -modelLabel.length)), models);
-    overflowText.update(subtitleTextEl);
-    limitWindowsView.setDetailTooltip(models, modelEntries);
+    replaceMetadata(subtitleTextEl, subtitleText, subtitleText.length - metadataLabel.length);
   } else {
     setHoverMarqueeText(subtitleTextEl, subtitleText);
   }
-  if (modelEntries && titleModelLabel && String(name || '').startsWith(titleModelLabel)) {
-    const models = document.createElement('span');
-    models.className = 'session-models';
-    models.textContent = titleModelLabel;
-    const titleContent = titleEl.querySelector('.overflow-text-content') || titleEl;
-    titleContent.replaceChildren(models, document.createTextNode(name.slice(titleModelLabel.length)));
-    overflowText.update(titleEl);
-    limitWindowsView.setDetailTooltip(models, modelEntries);
+  if (hasMetadata && titleModelLabel && metadataLabel && String(name || '').startsWith(metadataLabel)) {
+    replaceMetadata(titleEl, name, 0);
   }
-  if (!subtitleShowsModel && !titleModelLabel && modelEntries && modelLabel && String(name || '').endsWith(modelLabel)) {
-    limitWindowsView.setDetailTooltip(titleEl, modelEntries);
-  } else if (titleEl.classList.contains('limit-detail-tooltip-wrap')) {
+  if (titleEl.classList.contains('limit-detail-tooltip-wrap')) {
     limitWindowsView.setDetailTooltip(titleEl, null);
   }
-  subtitleEl.classList.toggle('hidden', !subtitle);
+  if (!subtitleShowsModel && !titleModelLabel && hasMetadata && metadataLabel && String(name || '').endsWith(metadataLabel)) {
+    replaceMetadata(titleEl, name, name.length - metadataLabel.length);
+  }
+  subtitleEl.classList.toggle('hidden', !subtitleText && !subagentCountLabel);
   // The activity line carries time, calls, cache hit and tok/s; a narrow window
   // fades and scrolls it on hover the way the title does rather than wrapping.
   const activityEl = row.querySelector('.row-activity');
   setHoverMarqueeText(activityEl, activity);
   activityEl.classList.toggle('hidden', !activity);
+  // Local sessions keep their usual density; only a confirmed remote source
+  // adds a separate line below the session's activity.
+  const deviceEl = row.querySelector('.row-device');
+  const remoteDevice = state.settings?.deviceId && sourceDevice?.deviceId
+    && sourceDevice.deviceId !== state.settings.deviceId && sourceDevice.name ? sourceDevice : null;
+  setHoverMarqueeText(deviceEl, remoteDevice?.name || '');
+  deviceEl.classList.toggle('hidden', !remoteDevice);
+  if (remoteDevice) {
+    const deviceKind = deviceIconsApi.deviceIconKind(state.settings, remoteDevice);
+    const content = deviceEl.querySelector('.overflow-text-content') || deviceEl;
+    const existingIcon = content.querySelector('.device-kind-icon');
+    const icon = existingIcon || deviceIconsApi.deviceIconNode(document, deviceKind);
+    icon.className = `device-kind-icon device-kind-${deviceKind}`;
+    limitWindowsView.setDetailTooltip(icon, [{ full: `${remoteDevice.name} · ${t(`devices.kind.${deviceKind}`)}` }]);
+    if (!existingIcon) content.prepend(icon);
+    overflowText.update(deviceEl);
+  }
   // A titled session already has name, client/model and activity lines. Move
   // its ID into Details, but keep the ID when only two lines remain so untitled
   // sessions can still be distinguished (including when titles are disabled).
@@ -2597,7 +2905,7 @@ function updateRow(row, { name, subtitle, subtitleIdentity, subagentCountLabel, 
   const costLabelText = formatCost(cost || 0, unpricedTokens);
   costEl.textContent = tokenDataUnavailable === true ? ''
     : unpricedTokens > 0 ? (cost > 0 ? `${formatCost(cost)} + ?` : '—') : costLabelText;
-  costEl.title = tokenDataUnavailable === true ? '' : costLabelText;
+  costEl.setAttribute('aria-label', tokenDataUnavailable === true ? '' : costLabelText);
   // The row builder already applied the shared gate (recent enough to have a
   // reading), so this draws whatever arrived rather than re-deciding from
   // `running` - that second gate is exactly what made the dock card and this
@@ -2748,19 +3056,90 @@ function renderSessionPager(page) {
     [next, 'sessions.pageNext']
   ]) {
     button.setAttribute('aria-label', t(labelKey));
-    button.title = t(labelKey);
   }
   previous.disabled = page.page === 0;
   next.disabled = page.page >= page.pageCount - 1;
   pager.querySelector('.session-page-status').textContent = t('sessions.pageRange', page);
 }
 
+function updateSessionToolScrollButtons() {
+  const strip = els.sessionToolFilterItems;
+  const overflow = strip.scrollWidth > strip.clientWidth + 1;
+  els.sessionToolFilter.classList.toggle('has-overflow', overflow);
+  els.sessionToolPrevious.disabled = !overflow || strip.scrollLeft <= 1;
+  els.sessionToolNext.disabled = !overflow || strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1;
+}
+
+function scrollSessionTools(direction) {
+  els.sessionToolFilterItems.scrollBy({
+    left: direction * els.sessionToolFilterItems.clientWidth * 0.75,
+    behavior: prefersReducedMotion() ? 'instant' : 'smooth'
+  });
+}
+
+function sessionToolClients(row) {
+  if (row.kind !== 'session' && row.kind !== 'summary') return [];
+  return [row.client, ...(row.groupRows || []).map(member => member.client)].filter(Boolean);
+}
+
+// Filter only the session list; shared projections also feed Home and details.
+function renderSessionToolFilter(rows) {
+  const host = els.sessionToolFilter;
+  const strip = els.sessionToolFilterItems;
+  const clients = [...new Set(rows.flatMap(sessionToolClients))];
+  clients.sort((a, b) => KNOWN_CLIENTS.findIndex(client => client.id === a) - KNOWN_CLIENTS.findIndex(client => client.id === b) || a.localeCompare(b));
+  if (state.sessionToolFilter && (clients.length < 2 || !clients.includes(state.sessionToolFilter))) {
+    state.sessionToolFilter = '';
+    state.sessionPage = 0;
+  }
+  host.classList.toggle('hidden', clients.length < 2);
+  host.setAttribute('aria-label', t('sessions.filterTools'));
+  els.sessionToolPrevious.setAttribute('aria-label', t('sessions.toolsPrevious'));
+  els.sessionToolNext.setAttribute('aria-label', t('sessions.toolsNext'));
+  const signature = JSON.stringify([currentLocale(), clients, state.sessionToolFilter]);
+  if (host.dataset.signature !== signature) {
+    host.dataset.signature = signature;
+    const focused = strip.contains(document.activeElement) ? document.activeElement.dataset.client : null;
+    const buttons = ['', ...clients].map(client => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'session-tool-filter-button';
+      button.dataset.client = client;
+      const label = client ? clientLabels[client] || client : t('sessions.allTools');
+      button.setAttribute('aria-label', label);
+      button.setAttribute('aria-pressed', String(state.sessionToolFilter === client));
+      if (client && clientsWithIcon.has(client)) {
+        const icon = document.createElement('span');
+        icon.className = `row-icon row-icon-${client}`;
+        icon.setAttribute('aria-hidden', 'true');
+        button.append(icon);
+      } else {
+        button.textContent = label;
+      }
+      button.addEventListener('click', () => {
+        state.sessionToolFilter = state.sessionToolFilter === client ? '' : client;
+        state.sessionPage = 0;
+        state.rowSignature = '';
+        els.breakdown.scrollTop = 0;
+        render();
+      });
+      return button;
+    });
+    strip.replaceChildren(...buttons);
+    if (focused !== null) buttons.find(button => button.dataset.client === focused)?.focus({ preventScroll: true });
+  }
+  updateSessionToolScrollButtons();
+  return state.sessionToolFilter ? rows.filter(row => sessionToolClients(row).includes(state.sessionToolFilter)) : rows;
+}
+
 function renderRows(rows, { incompleteHint = '' } = {}) {
   if (sessionTooltipShouldHoldRender()) return;
+  if (state.breakdown === 'session') rows = renderSessionToolFilter(rows);
   if (rows.length === 0 && !incompleteHint) {
     els.breakdown.replaceChildren();
     renderSessionPager(null);
     state.rowSignature = '';
+    renderProjectBreakdownFooter();
     return;
   }
   const page = breakdownPage(rows, { breakdown: state.breakdown, page: state.sessionPage });
@@ -2788,6 +3167,8 @@ function renderRows(rows, { incompleteHint = '' } = {}) {
     currencyRatesEffective: state.settings?.currencyRatesEffective || null,
     locale: currentLocale(),
     showToolIcons: toolIconsEnabled(state.settings?.showToolIcons),
+    deviceIconOverrides: state.settings?.deviceIconOverrides,
+    deviceIconScope: state.settings?.deviceIconScope,
     // The context gauge carries its own Remaining/Used preference, so flipping
     // either it or the limits meters has to invalidate these rows.
     showLimitUsed: state.settings?.showLimitUsed === true,
@@ -2831,6 +3212,7 @@ function renderRows(rows, { incompleteHint = '' } = {}) {
     rowRenderFingerprints.set(row, fingerprint);
   }
   renderToolDetailFooter();
+  renderProjectBreakdownFooter();
   if (liveMotionSnapshot) animateBreakdownFrom(liveMotionSnapshot, { duration: 600 });
 }
 
@@ -2987,6 +3369,7 @@ function modelRowsForPeriod(period, rankingMetric = state.settings?.modelRanking
 }
 
 function sessionPresentationOptions() {
+  const localDevice = state.stats?.devices?.find(device => device.deviceId === state.settings?.deviceId);
   return {
     clientLabels,
     clientColors,
@@ -2999,6 +3382,8 @@ function sessionPresentationOptions() {
     sourcePeriods: state.stats?.periods,
     grokBotSessionIds: state.stats?.grokBotSessionIds,
     nativeSessions: state.stats?.nativeSessions?.[state.period] || {},
+    localSourceDevice: localDevice ? { deviceId: localDevice.deviceId,
+      name: deviceBreakdownApi.deviceLabel(localDevice), platform: localDevice.platform || '', deviceKind: localDevice.deviceKind || 'computer' } : undefined,
     subagents: {
       countLabel: (count) => t('sessions.subagentCount', { count }),
       unattributedLabel: t('dashboard.tooltip.unclassified')
@@ -3039,8 +3424,12 @@ function projectRowsForPeriod(period) {
     clientLabels,
     clientColors,
     stableColor,
+    shareBy: state.settings?.projectBreakdownMode,
+    modelColor,
     fallbackColors: fallbackModelColors,
     unknownClientLabel: t('projects.unknownTool'),
+    unknownModelLabel: t('projects.unknownModel'),
+    allowSessionModelAttribution: !projectRowsApi.projectBreakdownIncomplete(state.stats, state.period),
     nativeProjects: state.stats?.nativeProjects?.[state.period] || {},
     nativeSessions: state.stats?.nativeSessions?.[state.period] || {}
   });
@@ -3072,20 +3461,22 @@ function availableBreakdownIds() {
   const order = ['home', baseBreakdownOrder[0], 'status', 'trends', ...baseBreakdownOrder.slice(1)];
   let available = state.settings?.historyEnabled === false ? order.filter((id) => id !== 'trends') : order;
   if (state.settings?.projectsEnabled === false) available = available.filter((id) => id !== 'project');
-  return limitViewAvailable() ? [...available, 'limits'] : available;
+  return [...(limitViewAvailable() ? [...available, 'limits'] : available), ...pluginPageOptions().map(page => page.id)];
 }
 
 function visibleBreakdownOrder() {
-  return viewDisplayPreferencesApi.visibleViewOrder({
+  return [...viewDisplayPreferencesApi.visibleViewOrder({
     views: VIEW_DISPLAY_OPTIONS,
     orderValue: effectiveViewDisplayOrderValue(),
     hiddenValue: state.settings?.hiddenViews,
     availableIds: availableBreakdownIds(),
     includeIds: directBreakdownOverride ? [directBreakdownOverride] : []
-  });
+  }), ...pluginPageOptions().map(page => page.id)];
 }
 
 function ensureBreakdownVisible() {
+  if (pluginPageOptions().some(page => page.id === state.breakdown)) return;
+  if (!state.pluginCatalog && pluginPlacementsApi.isHomeToken(state.breakdown)) return;
   const availableIds = availableBreakdownIds();
   if (directBreakdownOverride === state.breakdown && availableIds.includes(state.breakdown)) return;
   directBreakdownOverride = null;
@@ -3379,7 +3770,6 @@ function syncSubscriptionEditControls() {
     const editOpen = editorOpen && row.dataset.subscriptionId === editingId;
     const editLabel = editOpen ? t('settings.subscriptions.cancelEdit') : t('settings.subscriptions.edit');
     edit.textContent = editOpen ? '×' : '✎';
-    edit.title = editLabel;
     edit.setAttribute('aria-label', editLabel);
     edit.setAttribute('aria-expanded', editOpen ? 'true' : 'false');
   }
@@ -3452,7 +3842,6 @@ function renderSubscriptionRows() {
     const editOpen = editing && Boolean(els.subscriptionAddDetails && !els.subscriptionAddDetails.classList.contains('hidden'));
     const editLabel = editOpen ? t('settings.subscriptions.cancelEdit') : t('settings.subscriptions.edit');
     edit.textContent = editOpen ? '×' : '✎';
-    edit.title = editLabel;
     edit.setAttribute('aria-label', editLabel);
     edit.setAttribute('aria-expanded', editOpen ? 'true' : 'false');
     edit.setAttribute('aria-controls', 'subscriptionAddDetails');
@@ -3467,18 +3856,18 @@ function renderSubscriptionRows() {
     remove.type = 'button';
     remove.className = 'subscription-row-delete';
     remove.textContent = '✕';
-    remove.title = t('settings.subscriptions.delete');
+    remove.setAttribute('aria-label', t('settings.subscriptions.delete'));
     let armed = false;
     remove.addEventListener('click', async () => {
       if (!armed) {
         armed = true;
         remove.textContent = '✓';
-        remove.title = t('settings.subscriptions.deleteConfirm');
+        remove.setAttribute('aria-label', t('settings.subscriptions.deleteConfirm'));
         remove.classList.add('is-armed');
         setTimeout(() => {
           armed = false;
           remove.textContent = '✕';
-          remove.title = t('settings.subscriptions.delete');
+          remove.setAttribute('aria-label', t('settings.subscriptions.delete'));
           remove.classList.remove('is-armed');
         }, 4000);
         return;
@@ -3928,18 +4317,18 @@ function renderSubscriptionTopUpEntries() {
     remove.type = 'button';
     remove.className = 'subscription-topup-remove';
     remove.textContent = '✕';
-    remove.title = t('settings.subscriptions.topUpRemove');
+    remove.setAttribute('aria-label', t('settings.subscriptions.topUpRemove'));
     let armed = false;
     remove.addEventListener('click', () => {
       if (!armed) {
         armed = true;
         remove.textContent = '✓';
-        remove.title = t('settings.subscriptions.topUpRemoveConfirm');
+        remove.setAttribute('aria-label', t('settings.subscriptions.topUpRemoveConfirm'));
         remove.classList.add('is-armed');
         setTimeout(() => {
           armed = false;
           remove.textContent = '✕';
-          remove.title = t('settings.subscriptions.topUpRemove');
+          remove.setAttribute('aria-label', t('settings.subscriptions.topUpRemove'));
           remove.classList.remove('is-armed');
         }, 4000);
         return;
@@ -4217,7 +4606,7 @@ function limitDetailTooltipShouldHoldRender() {
 }
 
 function sessionTooltipShouldHoldRender() {
-  return Boolean(document.querySelector('.home-session-row .is-hover-reading, .home-session-meta .limit-detail-tooltip-wrap:hover, .home-session-meta .limit-detail-tooltip-wrap:focus-within, .row-context.limit-detail-tooltip-wrap:hover, .row-context.limit-detail-tooltip-wrap:focus-within, .row-label .limit-detail-tooltip-wrap:hover, .row-label .limit-detail-tooltip-wrap:focus-within, .session-group-run .is-hover-reading, .session-group-run:focus-within, .session-group-run .limit-detail-tooltip-wrap:hover, .session-group-run .limit-detail-tooltip-wrap:focus-within, .detail-ex-title.is-hover-reading, .detail-heading.is-hover-reading, .detail-ex-title.limit-detail-tooltip-wrap:hover, .detail-ex-title.limit-detail-tooltip-wrap:focus-within'));
+  return Boolean(document.querySelector('.home-panel:not(.hidden) .home-session-row .is-hover-reading, .home-panel:not(.hidden) .home-session-meta .limit-detail-tooltip-wrap:hover, .home-panel:not(.hidden) .home-session-meta .limit-detail-tooltip-wrap:focus-within, .row-context.limit-detail-tooltip-wrap:hover, .row-context.limit-detail-tooltip-wrap:focus-within, .row-label .limit-detail-tooltip-wrap:hover, .row-label .limit-detail-tooltip-wrap:focus-within, .session-group-run .is-hover-reading, .session-group-run:focus-within, .session-group-run .limit-detail-tooltip-wrap:hover, .session-group-run .limit-detail-tooltip-wrap:focus-within, .detail-ex-title.is-hover-reading, .detail-heading.is-hover-reading, .detail-ex-title.limit-detail-tooltip-wrap:hover, .detail-ex-title.limit-detail-tooltip-wrap:focus-within'));
 }
 
 function flushPendingLimitDetailTooltipRender() {
@@ -4251,8 +4640,33 @@ const { limitWindowText } = window.TokenMonitorLimitWindowText;
 // so its card is the same DOM rather than a second rendering of the same data.
 // Everything the builder needs from this page is handed over here; it reads no
 // globals of its own.
+let limitsHistoryOpen = false;
+let limitsHistoryActiveKey = '';
+document.addEventListener('pointerdown', event => {
+  if (limitsHistoryOpen && !event.target.closest('[data-limit-history]')) window.tokenMonitor.limits.closeHistory();
+}, true);
+window.tokenMonitor?.limits?.onHistoryState?.((open, key) => {
+  limitsHistoryOpen = open === true;
+  limitsHistoryActiveKey = limitsHistoryOpen ? key : '';
+  for (const row of document.querySelectorAll('[data-limit-history]')) {
+    row.classList.toggle('is-history-active', row.dataset.limitHistory === limitsHistoryActiveKey);
+  }
+});
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Escape' || !limitsHistoryOpen) return;
+  event.preventDefault();
+  window.tokenMonitor.limits.closeHistory();
+}, true);
+
 const limitWindowsView = window.TokenMonitorLimitWindowsView.createLimitWindowsView({
   document,
+  history: window.tokenMonitor?.limits?.openHistory ? {
+    key: window.TokenMonitorLimitsHistoryIdentity.historyRowKey,
+    activeKey: () => limitsHistoryActiveKey,
+    open: (key, rect, interactive) => window.tokenMonitor.limits.openHistory(key, rect, interactive),
+    enter: key => window.tokenMonitor.limits.enterHistory(key),
+    leave: key => window.tokenMonitor.limits.leaveHistory(key)
+  } : null,
   t,
   settings: () => state.settings,
   currentLocale,
@@ -4586,6 +5000,7 @@ function renderLimits() {
     settings: [
       state.settings?.showLimitSource === true,
       state.settings?.maskLimitAccountEmails === true,
+      state.settings?.limitsHistoryOpenMode,
       state.settings?.showLimitUsed === true,
       state.settings?.showToolIcons !== false,
       state.settings?.claudePrepaidBalanceEnabled !== false,
@@ -4594,6 +5009,7 @@ function renderLimits() {
       state.settings?.showCodexAdditionalLimits !== false,
       state.settings?.limitProviderHiddenItems || {},
       state.settings?.currency || '',
+      state.settings?.compactTokenUnits || '',
       state.settings?.currencyRatesEffective || null,
       state.settings?.subscriptions || [],
       state.settings?.codexManagedAccounts || [],
@@ -4699,12 +5115,12 @@ function serviceStatusIconId(id) {
 function renderServiceStatus() {
   if (!serviceStatusSurfaceVisible()) return;
   if (!els.serviceStatusPanel) return;
-  const rows = serviceStatusRows().map((provider) => {
+  const rows = serviceStatusRows().map((source) => {
+    const provider = serviceStatusPresentationApi.localizeProvider(source, currentLocale());
     const row = document.createElement('button');
     row.type = 'button';
     row.className = `service-status-row service-status-${provider.status || 'unknown'}`;
     row.dataset.provider = provider.id;
-    row.title = t('serviceStatus.openPage', { name: provider.label });
     row.addEventListener('click', () => window.tokenMonitor.openExternal?.(provider.pageUrl));
     const head = document.createElement('div');
     head.className = 'service-status-head';
@@ -4738,7 +5154,10 @@ function renderServiceStatus() {
       meta.append(checkedSpan);
     }
     const affected = serviceStatusPresentationApi.affectedComponentNames(provider.componentIssues).all;
-    if (affected.length) meta.title = affected.join(t('serviceStatus.listSeparator'));
+    row.setAttribute('aria-description', [
+      t('serviceStatus.openPage', { name: provider.label }),
+      affected.join(t('serviceStatus.listSeparator'))
+    ].filter(Boolean).join(' · '));
     row.append(head, description, meta);
     return row;
   });
@@ -4968,6 +5387,7 @@ function sessionDetailBack() {
 }
 
 function renderSessionDetail({ detail, loading, error, preserveScroll = false } = {}) {
+  els.sessionToolFilter.classList.add('hidden');
   els.breakdown.classList.add('hidden');
   els.sessionDetail.classList.remove('hidden');
   els.sessionDetailHead.classList.remove('hidden');
@@ -5056,7 +5476,9 @@ function sessionDetailTitle() {
   const session = request?.client === 'reasonix'
     ? state.stats?.nativeSessions?.[period]?.[request.sessionId]
     : state.stats?.periods?.[period]?.sessions?.[`${request?.client}:${request?.sessionId}`];
-  return session?.title || request?.title || '';
+  return sessionRowsApi.sessionTitleForDisplay({
+    client: request?.client, title: session?.title || request?.title
+  });
 }
 
 function refreshSessionDetailHeading() {
@@ -5114,7 +5536,6 @@ function sessionDetailBackButton() {
   back.setAttribute('aria-label', title
     ? t('sessions.backToWithTitle', { title, destination: backLabel })
     : t('sessions.backTo', { destination: backLabel }));
-  if (!title) back.title = backLabel;
   back.addEventListener('click', sessionDetailBack);
 
   if (title) {
@@ -5125,7 +5546,7 @@ function sessionDetailBackButton() {
     const heading = document.createElement('span');
     heading.className = 'detail-heading';
     heading.textContent = title;
-    heading.title = title;
+    heading.setAttribute('aria-label', title);
     bindHoverMarquee(heading);
     back.append(arrow, heading);
   }
@@ -5140,12 +5561,11 @@ function sessionIdLine(idLabel) {
   const text = document.createElement('span');
   text.className = 'detail-session-id-text';
   text.textContent = idLabel;
-  text.title = idLabel;
+  text.setAttribute('aria-label', idLabel);
   const copy = document.createElement('button');
   copy.type = 'button';
   copy.className = 'detail-session-id-copy';
   copy.textContent = '⧉';
-  copy.title = t('session.copyId');
   copy.setAttribute('aria-label', t('session.copyId'));
   copy.addEventListener('click', () => copyToClipboard(idLabel, copy));
   line.append(text, copy);
@@ -5156,13 +5576,13 @@ function sessionGroupRunNode(row, max, parent) {
   const subagentGroup = parent.summary?.subagentGroup === true;
   const namedGroup = subagentGroup || parent.summary?.sessionGroup === 'cursor-grok-bot';
   const title = namedGroup ? row.name
-    : [row.modelLabel, sessionRowsApi.compactSessionTime(row.sortTime)].filter(Boolean).join(' · ')
+    : [sessionRowsApi.sessionModelMetadataLabel(row), sessionRowsApi.compactSessionTime(row.sortTime)].filter(Boolean).join(' · ')
       || t('sessions.backgroundReviews');
   // Group members are still session rows. Share the template, metrics, tooltip
   // and activity rendering; exchange rows belong only to the actual transcript.
   const member = { ...row, name: title, titleModelLabel: namedGroup ? undefined : row.modelLabel };
   if (subagentGroup) {
-    member.subtitle = [row.clientLabel, row.modelLabel].filter(Boolean).join(' · ');
+    member.subtitle = [row.clientLabel, sessionRowsApi.sessionModelMetadataLabel(row)].filter(Boolean).join(' · ');
     member.activity = row.activitySummary;
   }
   const wrap = rowTemplate(member);
@@ -5187,6 +5607,7 @@ function sessionGroupRunNode(row, max, parent) {
 }
 
 function renderSessionGroupDetail(request) {
+  els.sessionToolFilter.classList.add('hidden');
   els.breakdown.classList.add('hidden');
   els.sessionDetail.classList.remove('hidden');
   els.sessionDetailHead.classList.remove('hidden');
@@ -5337,7 +5758,122 @@ function signalContentReady() {
   window.tokenMonitor.signalContentReady?.();
 }
 
+function hideTrendTooltip() {
+  state.trendTooltipTeardown?.();
+  state.trendTooltipTeardown = null;
+}
+
+function handleTrendsWindowBlur() {
+  hideTrendTooltip();
+  const spark = els.trendsPanel.querySelector('.trends-spark');
+  if (!spark?.dataset.renderPending) return;
+  delete spark.dataset.renderPending;
+  if (state.breakdown === 'trends') renderTrends();
+}
+
+function bindTrendTooltip(spark, model, points, labelKey, metric) {
+  const tooltip = homeActivityTooltipEl('trends-tooltip');
+  tooltip.setAttribute('aria-live', 'polite');
+  tooltip.setAttribute('aria-atomic', 'true');
+  let hovered = false;
+  let focused = false;
+  let pointerPoint = null;
+  let selected = -1;
+  const bars = Array.from(spark.querySelectorAll('.spark-bar'));
+  const hide = () => {
+    tooltip.dataset.visible = 'false';
+    tooltip.setAttribute('aria-hidden', 'true');
+    tooltip.style.transform = 'translate(-9999px, -9999px)';
+    bars[selected]?.removeAttribute('data-active');
+  };
+  const position = () => {
+    if (pointerPoint) {
+      const rect = tooltip.getBoundingClientRect();
+      const gap = 14;
+      const pad = 6;
+      const desiredX = pointerPoint.x - rect.width / 2;
+      const aboveY = pointerPoint.y - gap - rect.height;
+      const desiredY = aboveY >= pad ? aboveY : pointerPoint.y + gap;
+      const x = Math.max(pad, Math.min(window.innerWidth - pad - rect.width, desiredX));
+      const y = Math.max(pad, Math.min(window.innerHeight - pad - rect.height, desiredY));
+      tooltip.style.transform = `translate(${x}px, ${y}px)`;
+      return;
+    }
+    const rect = spark.querySelector('.sparkline').getBoundingClientRect();
+    const bar = model.bars[selected];
+    // Anchor to the selected bar's top, rather than the whole chart's top edge.
+    const x = rect.left + (bar.x + bar.width / 2) / model.width * rect.width;
+    const y = rect.top + bar.y / model.height * rect.height;
+    moveHomeActivityTooltip(tooltip, {
+      getBoundingClientRect: () => ({ left: x, width: 0, top: y, bottom: y })
+    });
+  };
+  const show = () => {
+    state.trendTooltipTeardown = hide;
+    bars[selected]?.setAttribute('data-active', 'true');
+    tooltip.dataset.visible = 'true';
+    tooltip.setAttribute('aria-hidden', 'false');
+    position();
+  };
+  const select = (index) => {
+    if (index !== selected) {
+      bars[selected]?.removeAttribute('data-active');
+      selected = index;
+      const point = points[index];
+      const date = String(point[labelKey] || '');
+      const value = `${formatNumber(point[metric])} tokens`;
+      spark.setAttribute('aria-label', `${t('trends.open')} · ${date} · ${value}`);
+      tooltip.querySelector('[data-home-activity-tooltip-count]').textContent = formatCompact(point[metric]);
+      tooltip.querySelector('[data-home-activity-tooltip-date]').textContent = date;
+    }
+  };
+  const pointAtPointer = (event) => {
+    const rect = spark.querySelector('.sparkline').getBoundingClientRect();
+    if (!(rect.width > 0)) return;
+    pointerPoint = { x: event.clientX, y: event.clientY };
+    // Use each day's full column, including gaps and zero-height bars.
+    select(Math.max(0, Math.min(points.length - 1,
+      Math.floor((event.clientX - rect.left) / rect.width * points.length))));
+    show();
+  };
+  spark.addEventListener('pointerenter', (event) => { hovered = true; pointAtPointer(event); });
+  spark.addEventListener('pointermove', pointAtPointer);
+  spark.addEventListener('focusin', () => { focused = true; pointerPoint = null; show(); });
+  spark.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { hide(); return; }
+    const index = event.key === 'ArrowLeft' ? Math.max(0, selected - 1)
+      : event.key === 'ArrowRight' ? Math.min(points.length - 1, selected + 1)
+        : event.key === 'Home' ? 0 : event.key === 'End' ? points.length - 1 : null;
+    if (index === null) return;
+    event.preventDefault();
+    pointerPoint = null;
+    select(index);
+    show();
+  });
+  const flush = () => {
+    if (!spark.dataset.renderPending) return;
+    delete spark.dataset.renderPending;
+    requestAnimationFrame(renderTrends);
+  };
+  // Keep a live refresh from replacing the focused/hovered chart mid-read.
+  spark.addEventListener('pointerleave', () => {
+    hovered = false;
+    pointerPoint = null;
+    if (focused) position(); else hide();
+    flush();
+  });
+  spark.addEventListener('focusout', () => { focused = false; if (!hovered) hide(); flush(); });
+  select(points.length - 1);
+}
+
 function renderTrends() {
+  const reading = document.hasFocus()
+    && els.trendsPanel.querySelector('.trends-spark:hover, .trends-spark:focus-within');
+  if (reading) {
+    reading.dataset.renderPending = 'true';
+    return;
+  }
+  hideTrendTooltip();
   const charts = window.TokenMonitorUsageCharts;
   const previousBars = captureTrendBarMotion();
   const preview = state.stats?.historyPreview || { daily: [], monthly: [], summary: {} };
@@ -5382,10 +5918,11 @@ function renderTrends() {
     .join('');
 
   els.trendsPanel.innerHTML =
-    `<div class="trends-cap"><span>${rangeLabel}</span><span class="trends-open-hint" title="${t('trends.open')}">↗</span></div>`
-    + `<div class="trends-spark" role="button" tabindex="0" title="${t('trends.open')}">${svg}</div>`
+    `<div class="trends-cap"><span>${rangeLabel}</span><span class="trends-open-hint" aria-label="${t('trends.open')}">↗</span></div>`
+    + `<div class="trends-spark" role="button" tabindex="0" aria-label="${t('trends.open')}">${svg}</div>`
     + `<div class="trends-axis"><span>${first}</span><span>${last}</span></div>`
     + `<div class="trends-stats">${statsHtml}</div>`;
+  bindTrendTooltip(els.trendsPanel.querySelector('.trends-spark'), model, finalPoints, labelKey, metric);
   const bars = Array.from(els.trendsPanel.querySelectorAll('.spark-bar'));
   bars.forEach((bar, index) => {
     bar.dataset.motionKey = String(finalPoints[index]?.[labelKey] || index);
@@ -5396,12 +5933,18 @@ function renderTrends() {
 }
 
 function viewLabelById(id) {
+  const page = pluginPageOptions().find(page => page.id === id);
+  if (page) return page.title;
   const view = VIEW_DISPLAY_OPTIONS.find((option) => option.id === id);
   return view ? viewLabel(view) : id;
 }
 
 function isSettingsPanelOpen() {
   return Boolean(els.settingsPanel && !els.settingsPanel.classList.contains('hidden'));
+}
+
+function isNativeWindowTransfer() {
+  return globalThis[Symbol.for('token-monitor.window-view-state')]?.transferring === true;
 }
 
 function isRendererWindowHidden() {
@@ -5464,13 +6007,17 @@ function resetSettingsListSearch() {
   if (els.limitProviderSearchInput) els.limitProviderSearchInput.value = '';
 }
 
-function openSettingsPanel() {
+function openSettingsPanel(section) {
   if (!els.settingsPanel) return;
   if (state.viewSwitcherOpen) setViewSwitcherOpen(false);
   els.settingsPanel.classList.remove('hidden');
   els.shell.classList.add('settings-open');
   syncSettingsForm();
   ensureServiceStatusTicker();
+  if (section === 'notch') {
+    setSettingsSectionExpanded('window', true);
+    displaySettings?.open('notch');
+  }
   els.shell.style.transform = 'translateZ(0)';
   requestAnimationFrame(() => { els.shell.style.transform = ''; });
 }
@@ -5763,6 +6310,8 @@ function setPeriodMenuOpen(open, { restoreFocus = false, focus = '' } = {}) {
   state.periodMenuOpen = Boolean(open);
   els.monthPeriodMenu?.closest('.titlebar')?.classList.toggle('period-menu-open', state.periodMenuOpen);
   els.monthPeriodMenu?.classList.toggle('hidden', !state.periodMenuOpen);
+  if (state.periodMenuOpen) els.monthPeriodMenu?.showPopover();
+  else els.monthPeriodMenu?.hidePopover();
   els.monthPeriodTab?.setAttribute('aria-expanded', String(state.periodMenuOpen));
   for (const button of periodMenuButtons()) {
     button.tabIndex = state.periodMenuOpen && button.classList.contains('is-current') ? 0 : -1;
@@ -5789,10 +6338,27 @@ function syncPeriodMenu() {
   }
 }
 
+// Built-in Home modules plus the plugin views the user has placed on Home.
+// Only placed views count as known: an active plugin's other views must not be
+// appended to the order the way a newly shipped built-in module would be.
+function homeModuleOptions() {
+  const placed = new Set(String(state.settings?.homeModuleOrder || '').split(',').map((id) => id.trim().toLowerCase()));
+  const extra = [];
+  for (const plugin of state.pluginCatalog?.plugins || []) {
+    if (plugin.status !== 'active') continue;
+    for (const view of plugin.views || []) {
+      const id = pluginPlacementsApi.homeToken(view.ref);
+      if (!view.surfaces.includes('home') || !placed.has(id)) continue;
+      extra.push({ id, label: view.title, ref: view.ref, pluginName: plugin.name, icon: view.icon });
+    }
+  }
+  return [...HOME_MODULE_OPTIONS, ...extra];
+}
+
 function homeModuleIds() {
   const hidden = hiddenHomeModuleSet();
   return homeModulePreferencesApi
-    .orderedHomeModules(HOME_MODULE_OPTIONS, state.settings?.homeModuleOrder)
+    .orderedHomeModules(homeModuleOptions(), state.settings?.homeModuleOrder)
     .map((module) => module.id)
     .filter((id) => !hidden.has(id));
 }
@@ -5805,8 +6371,10 @@ function nextBreakdown(value) {
 }
 
 function viewSwitcherIcon(id) {
+  const page = pluginPageOptions().find(page => page.id === id);
+  if (page) return window.TokenMonitorPluginViews.navigationIcon(document, page, 14);
   const icon = document.createElement('span');
-  icon.className = `view-switcher-icon ${VIEW_ICON_CLASSES[id] || 'view-icon-home'}`;
+  icon.className = `view-switcher-icon ${VIEW_ICON_CLASSES[id] || (pluginPlacementsApi.isHomeToken(id) ? 'view-icon-plugin' : 'view-icon-home')}`;
   icon.setAttribute('aria-hidden', 'true');
   return icon;
 }
@@ -5834,17 +6402,26 @@ function updateViewSwitcherOpenState({ focusMenu = false, focusDisclosure = fals
   const menu = els.viewSwitcher.querySelector('#viewSwitcherMenu');
   const disclosure = els.viewSwitcher.querySelector('.view-switcher-disclosure');
   if (!menu || !disclosure) return false;
+  const wasOpen = menu.matches(':popover-open');
 
   els.viewSwitcher.classList.toggle('is-open', state.viewSwitcherOpen);
   els.viewSwitcher.classList.toggle('has-opened', state.viewSwitcherHasOpened);
   disclosure.setAttribute('aria-expanded', String(state.viewSwitcherOpen));
   menu.classList.toggle('hidden', !state.viewSwitcherOpen);
+  if (state.viewSwitcherOpen !== wasOpen) {
+    if (state.viewSwitcherOpen) menu.showPopover();
+    else menu.hidePopover();
+  }
   menu.setAttribute('aria-hidden', String(!state.viewSwitcherOpen));
   for (const item of menu.querySelectorAll('.view-switcher-menu-item')) {
     item.tabIndex = state.viewSwitcherOpen && item.classList.contains('is-current') ? 0 : -1;
   }
+  if (state.viewSwitcherOpen && (!wasOpen || focusMenu)) requestAnimationFrame(() => menu.querySelector('.is-current')?.scrollIntoView({ block: 'nearest' }));
   if (focusMenu) requestAnimationFrame(() => menu.querySelector('.is-current')?.focus());
   if (focusDisclosure) requestAnimationFrame(() => disclosure.focus());
+  if (visibleStatsSurface() === 'main' && !isSettingsPanelOpen() && !isRendererWindowHidden() && !state.floatingBubble.collapsed) {
+    pluginContent?.render('main.navigation.content', els.viewSwitcher, { surface: 'page', navigate: openViewFromTray });
+  }
   return true;
 }
 
@@ -5864,12 +6441,17 @@ function renderViewSwitcher({ focusMenu = false, focusDisclosure = false } = {})
   const currentLabel = viewLabelById(currentId);
   const nextId = nextBreakdown(currentId);
   const nextLabel = viewLabelById(nextId);
+  const renderKey = JSON.stringify([currentId, order.map(id => [id, viewLabelById(id)]),
+    pluginPageOptions().map(page => [page.id, page.icon, page.identityIcon]),
+    t('views.switcher.choose'), t('views.switcher.next', { view: nextLabel })]);
+  // Usage pushes repaint the page without changing navigation. Keep the same
+  // popover/rows so hover, focus, scroll and its entry animation survive them.
+  if (renderKey === viewSwitcherRenderKey && updateViewSwitcherOpenState({ focusMenu, focusDisclosure })) return;
 
   const current = document.createElement('button');
   current.type = 'button';
   current.className = 'view-switcher-current';
-  current.title = t('views.switcher.next', { view: nextLabel });
-  current.setAttribute('aria-label', current.title);
+  current.setAttribute('aria-label', t('views.switcher.next', { view: nextLabel }));
   current.append(viewSwitcherIcon(currentId));
   const label = document.createElement('span');
   label.className = 'view-switcher-label';
@@ -5904,8 +6486,7 @@ function renderViewSwitcher({ focusMenu = false, focusDisclosure = false } = {})
   const disclosure = document.createElement('button');
   disclosure.type = 'button';
   disclosure.className = 'view-switcher-disclosure';
-  disclosure.title = t('views.switcher.choose');
-  disclosure.setAttribute('aria-label', disclosure.title);
+  disclosure.setAttribute('aria-label', t('views.switcher.choose'));
   disclosure.setAttribute('aria-haspopup', 'menu');
   disclosure.setAttribute('aria-controls', 'viewSwitcherMenu');
   disclosure.setAttribute('aria-expanded', String(state.viewSwitcherOpen));
@@ -5922,6 +6503,7 @@ function renderViewSwitcher({ focusMenu = false, focusDisclosure = false } = {})
 
   const menu = document.createElement('div');
   menu.id = 'viewSwitcherMenu';
+  menu.setAttribute('popover', 'manual');
   menu.className = `view-switcher-menu${state.viewSwitcherOpen ? '' : ' hidden'}`;
   menu.setAttribute('role', 'menu');
   menu.setAttribute('aria-label', t('views.switcher.choose'));
@@ -5971,26 +6553,41 @@ function renderViewSwitcher({ focusMenu = false, focusDisclosure = false } = {})
   els.viewSwitcher.classList.toggle('is-open', state.viewSwitcherOpen);
   els.viewSwitcher.classList.toggle('has-opened', state.viewSwitcherHasOpened);
   els.viewSwitcher.replaceChildren(current, disclosure, menu);
+  viewSwitcherRenderKey = renderKey;
+  if (state.viewSwitcherOpen) menu.showPopover();
+  if (state.viewSwitcherOpen) requestAnimationFrame(() => menu.querySelector('.is-current')?.scrollIntoView({ block: 'nearest' }));
   if (focusMenu) requestAnimationFrame(() => menu.querySelector('.is-current')?.focus());
   if (focusDisclosure) requestAnimationFrame(() => disclosure.focus());
+  if (visibleStatsSurface() === 'main' && !isSettingsPanelOpen() && !isRendererWindowHidden() && !state.floatingBubble.collapsed) {
+    pluginContent?.render('main.navigation.content', els.viewSwitcher, { surface: 'page', navigate: openViewFromTray });
+  }
 }
 
 function homeModuleShell(kind, title, viewId, meta = '') {
-  const module = document.createElement('section');
+  // A content outlet sits beside its native anchor. Keep that connected shell
+  // while refreshing the native fallback; retaining only author children after
+  // removing their ancestor is too late to preserve focus and scroll anchoring.
+  // Standalone plugin modules already retain their own shell by view ref.
+  const retained = kind === 'plugin' ? null : [...els.homePanel.children].find(node => node.classList.contains(`home-module-${kind}`)
+    && [node, ...node.children].some(anchor => pluginContent?.hasAnchor(anchor)));
+  const module = retained || document.createElement('section');
   module.className = `home-module home-module-${kind}`;
-  module.tabIndex = 0;
-  module.setAttribute('role', 'button');
   module.setAttribute('aria-label', title);
-  module.addEventListener('click', (event) => {
-    if (event.target.closest('.home-activity-scroll')) return;
-    renderBreakdownChange(viewId, { fromHome: true });
-  });
-  module.addEventListener('keydown', (event) => {
-    if (event.target !== module) return;
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    renderBreakdownChange(viewId, { fromHome: true });
-  });
+  // Plugin modules have no detail view to jump to.
+  if (viewId && !retained) {
+    module.tabIndex = 0;
+    module.setAttribute('role', 'button');
+    module.addEventListener('click', (event) => {
+      if (event.target.closest('.home-activity-scroll')) return;
+      renderBreakdownChange(viewId, { fromHome: true });
+    });
+    module.addEventListener('keydown', (event) => {
+      if (event.target !== module) return;
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      renderBreakdownChange(viewId, { fromHome: true });
+    });
+  }
   const head = document.createElement('div');
   head.className = 'home-module-head';
   const titleWrap = document.createElement('div');
@@ -6007,13 +6604,22 @@ function homeModuleShell(kind, title, viewId, meta = '') {
     metaText.textContent = meta;
     end.append(metaText);
   }
-  const icon = document.createElement('span');
-  icon.className = `home-module-jump ${VIEW_ICON_CLASSES[viewId] || ''}`;
-  icon.setAttribute('aria-hidden', 'true');
-  end.append(icon);
+  if (viewId) {
+    const icon = document.createElement('span');
+    icon.className = `home-module-jump ${VIEW_ICON_CLASSES[viewId] || ''}`;
+    icon.setAttribute('aria-hidden', 'true');
+    end.append(icon);
+  }
   head.append(titleWrap, end);
   const body = document.createElement('div');
   body.className = 'home-module-body';
+  if (retained) {
+    const nativeHead = module.querySelector('.home-module-head');
+    const nativeBody = module.querySelector('.home-module-body');
+    nativeHead.replaceChildren(...head.childNodes);
+    nativeBody.replaceChildren();
+    return { module, body: nativeBody };
+  }
   module.append(head, body);
   return { module, body };
 }
@@ -6133,7 +6739,7 @@ function renderHomeLimitModule() {
       const plan = document.createElement('span');
       plan.className = 'home-limit-plan';
       plan.textContent = row.plan;
-      plan.title = row.plan;
+      plan.setAttribute('aria-label', row.plan);
       account.append(plan);
     }
     const windows = document.createElement('div');
@@ -6141,6 +6747,7 @@ function renderHomeLimitModule() {
     for (const window of row.windows) {
       const metric = document.createElement('div');
       metric.className = 'home-limit-window';
+      if (window.fullWidth) metric.classList.add('home-limit-window-wide');
       const line = document.createElement('div');
       line.className = 'home-limit-window-line';
       const label = document.createElement('span');
@@ -6159,7 +6766,15 @@ function renderHomeLimitModule() {
           value.style.setProperty('--home-limit-accent', row.color);
         }
       }
-      line.append(label, value);
+      const info = limitWindowsView.limitDetailInfoNode(window.detailEntries);
+      if (info) {
+        const right = document.createElement('span');
+        right.className = 'home-limit-window-value';
+        right.append(value, info);
+        line.append(label, right);
+      } else {
+        line.append(label, value);
+      }
       metric.append(line);
       // Money and fixed labels retain a remaining meter; only percentage
       // labels follow the global used/remaining display preference.
@@ -6195,7 +6810,7 @@ function renderHomeLimitModule() {
 
 function renderHomeModelModule(period) {
   const { module, body } = homeModuleShell('model', t('home.models'), 'model');
-  const rows = homeOverviewApi.homeModelRows(modelRowsForPeriod(period, 'tokens'), period?.totalTokens, 5);
+  const rows = homeOverviewApi.homeModelRows(modelRowsForPeriod(period, 'tokens'), period?.totalTokens, homeModulePreferencesApi.homeModuleCount(state.settings, 'model'));
   if (rows.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
@@ -6234,7 +6849,7 @@ function homeToolSourceRows(period) {
 
 function renderHomeToolModule(period) {
   const { module, body } = homeModuleShell('tool', t('home.tools'), 'tool');
-  const rows = homeOverviewApi.homeToolRows(homeToolSourceRows(period), period?.totalTokens, 5);
+  const rows = homeOverviewApi.homeToolRows(homeToolSourceRows(period), period?.totalTokens, homeModulePreferencesApi.homeModuleCount(state.settings, 'tool'));
   if (rows.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
@@ -6272,25 +6887,6 @@ function homeSessionAgo(value) {
   return t('edgeDock.agoDays', { count: Math.round(hours / 24) });
 }
 
-function homeSessionContext(context, promptCache) {
-  const showUsed = state.settings?.sessionContextMetric !== 'remaining';
-  const percent = showUsed ? context.percentUsed : context.percentLeft;
-  const node = document.createElement('span');
-  node.className = 'home-session-context';
-  node.dataset.tone = context.tone || '';
-  const meter = document.createElement('span');
-  meter.className = 'home-session-context-meter';
-  const fill = document.createElement('span');
-  fill.className = 'home-session-context-fill';
-  fill.style.setProperty('--bar-scale', String(percent / 100));
-  meter.append(fill);
-  const value = document.createElement('span');
-  value.textContent = `${percent}%`;
-  node.append(meter, value);
-  sessionRowsApi.setSessionTooltip(node, context, promptCache, t, limitWindowsView);
-  return node;
-}
-
 function stopHomeSessionRepaint() {
   clearTimeout(state.homeSessionRepaintTimer);
   state.homeSessionRepaintTimer = null;
@@ -6298,7 +6894,7 @@ function stopHomeSessionRepaint() {
 
 function scheduleHomeSessionRepaint(rows) {
   stopHomeSessionRepaint();
-  rows ||= window.TokenMonitorEdgeDockPresentation.recentSessionRows(state.stats, 5, { ...sessionPresentationOptions(), includeRunningBeyondCap: true });
+  rows ||= window.TokenMonitorEdgeDockPresentation.recentSessionRows(state.stats, homeModulePreferencesApi.homeModuleCount(state.settings, 'session'), { ...sessionPresentationOptions(), includeRunningBeyondCap: true });
   if (!rows.length) return;
   const now = Date.now();
   const expiry = window.TokenMonitorEdgeDockPresentation.nextRunningExpiryAt(rows, now);
@@ -6314,9 +6910,9 @@ function scheduleHomeSessionRepaint(rows) {
     const hadFocus = document.activeElement === current;
     const hadHeadFocus = document.activeElement === current.querySelector?.('.home-module-head');
     const focusedKey = document.activeElement?.closest?.('.home-session-row')?.dataset?.key;
-    const nextRows = window.TokenMonitorEdgeDockPresentation.recentSessionRows(state.stats, 5, { ...sessionPresentationOptions(), includeRunningBeyondCap: true });
+    const nextRows = window.TokenMonitorEdgeDockPresentation.recentSessionRows(state.stats, homeModulePreferencesApi.homeModuleCount(state.settings, 'session'), { ...sessionPresentationOptions(), includeRunningBeyondCap: true });
     const next = renderHomeSessionModule(nextRows);
-    current.replaceWith(next);
+    if (current !== next) current.replaceWith(next);
     if (hadFocus) next.focus();
     if (hadHeadFocus) next.querySelector('.home-module-head')?.focus({ preventScroll: true });
     if (focusedKey) {
@@ -6357,7 +6953,7 @@ function renderHomeSessionModule(rows) {
     homeSessionRenderPending = true;
     return current;
   }
-  rows ||= window.TokenMonitorEdgeDockPresentation.recentSessionRows(state.stats, 5, { ...sessionPresentationOptions(), includeRunningBeyondCap: true });
+  rows ||= window.TokenMonitorEdgeDockPresentation.recentSessionRows(state.stats, homeModulePreferencesApi.homeModuleCount(state.settings, 'session'), { ...sessionPresentationOptions(), includeRunningBeyondCap: true });
   const runningCount = window.TokenMonitorEdgeDockPresentation.runningSessionSummary(rows).count;
   const meta = runningCount > 0 ? t('home.runningSessions', { count: runningCount }) : '';
   const { module, body } = homeModuleShell('session', t('home.sessions'), 'session', meta);
@@ -6378,11 +6974,11 @@ function renderHomeSessionModule(rows) {
     const stateMark = document.createElement('span');
     stateMark.className = 'home-session-state';
     stateMark.dataset.state = activityState;
-    stateMark.setAttribute('aria-hidden', 'true');
-    if (activityState === 'waiting') {
-      stateMark.setAttribute('aria-hidden', 'false');
+    const stateLabelKey = { running: 'session.running', waiting: 'session.waiting', ended: 'session.finished' }[activityState];
+    stateMark.setAttribute('aria-hidden', stateLabelKey ? 'false' : 'true');
+    if (stateLabelKey) {
       stateMark.setAttribute('role', 'img');
-      stateMark.setAttribute('aria-label', t('session.waiting'));
+      stateMark.setAttribute('aria-label', t(stateLabelKey));
     }
     stateMark.innerHTML = window.TokenMonitorSessionLive.sessionStateMarkup({
       spin: 'home-session-spin',
@@ -6390,8 +6986,6 @@ function renderHomeSessionModule(rows) {
       idle: 'home-session-idle',
       waiting: 'home-session-waiting'
     });
-    stateMark.title = t(activityState === 'waiting' ? 'session.waiting' : activityState === 'running' ? 'session.running'
-      : activityState === 'ended' ? 'session.finished' : 'session.idle');
     const name = document.createElement('span');
     name.className = 'home-list-name';
     name.textContent = row.title || row.projectLabel || String(row.sessionId || '').slice(0, 12) || '—';
@@ -6410,39 +7004,24 @@ function renderHomeSessionModule(rows) {
     // The same "N models" hover the Sessions list draws: the label stays the
     // row's own text, and the tooltip lists the models behind the count.
     const modelLabel = sessionRowsApi.sessionModelLabel(row);
-    const modelEntries = sessionRowsApi.sessionModelTooltipEntries(row, {
+    const metadataLabel = sessionRowsApi.sessionModelMetadataLabel(row);
+    description.append(sessionRowsApi.sessionModelMetadataNode(document, { ...row, modelLabel }, {
+      translate: t, view: limitWindowsView,
       unattributedLabel: t('dashboard.tooltip.unclassified'),
       formatTokens: formatCompact
-    });
-    if (modelLabel) {
-      if (modelEntries.length > 1) {
-        const models = document.createElement('span');
-        models.className = 'session-models';
-        models.textContent = modelLabel;
-        limitWindowsView.setDetailTooltip(models, modelEntries);
-        description.append(models);
-      } else description.append(document.createTextNode(modelLabel));
-    }
+    }));
     if (memberLabel) {
-      if (modelLabel) description.append(document.createTextNode(' · '));
+      if (metadataLabel) description.append(document.createTextNode(' · '));
       const count = document.createElement('span');
       count.className = 'home-session-member-count';
       count.textContent = memberLabel;
       description.append(count);
     }
-    if (age) description.append(document.createTextNode(`${memberLabel || modelLabel ? ' · ' : ''}${age}`));
+    if (age) description.append(document.createTextNode(`${memberLabel || metadataLabel ? ' · ' : ''}${age}`));
     meta.append(description);
-    const statusRow = row.groupRows?.[0] || row;
-    const context = window.TokenMonitorSessionLive.sessionActivityState(statusRow) !== 'idle' ? statusRow.context : null;
-    const cache = window.TokenMonitorSessionLive.sessionPromptCacheForRow(statusRow);
-    if (cache && !context) {
-      const badge = document.createElement('span');
-      badge.className = 'home-session-cache';
-      badge.textContent = t('session.cacheEstimate', { minutes: cache.minutes });
-      sessionRowsApi.setSessionTooltip(badge, statusRow, cache, t, limitWindowsView);
-      meta.append(badge);
-    }
-    if (context) meta.append(homeSessionContext(context, cache));
+    const status = sessionRowsApi.sessionStatusNode(document, row, { prefix: 'home-session', translate: t,
+      view: limitWindowsView, showUsed: state.settings?.sessionContextMetric !== 'remaining' });
+    if (status) meta.append(status);
     item.append(mark, stateMark, name, value, meta);
     body.append(item);
   }
@@ -6454,7 +7033,7 @@ function renderHomeDeviceModule() {
   const rows = homeOverviewApi.homeDeviceRows(fixedPeriodDevices(), {
     localDeviceId: state.settings?.deviceId || '',
     period: state.period,
-    limit: 4
+    limit: homeModulePreferencesApi.homeModuleCount(state.settings, 'device')
   });
   if (rows.length === 0) {
     const empty = document.createElement('div');
@@ -6468,7 +7047,7 @@ function renderHomeDeviceModule() {
     item.className = 'home-list-row home-device-row';
     if (row.isStale) {
       item.classList.add('is-stale');
-      item.title = t('home.staleDevice');
+      item.setAttribute('aria-description', t('home.staleDevice'));
     }
     const mark = document.createElement('span');
     applyHomeListMark(mark, iconKindFor({ platform: row.platform }, 'device'), row.isStale ? deviceStaleColor : deviceAccent);
@@ -6572,11 +7151,12 @@ function setupHomeActivityScroller(scroller, onReady = null) {
   applyHomeActivityScroll(scroller);
 }
 
-function homeActivityTooltipEl() {
-  let tooltip = document.querySelector('.home-activity-tooltip');
+function homeActivityTooltipEl(instanceClass = 'home-heatmap-tooltip') {
+  let tooltip = document.querySelector(`.${instanceClass}`);
   if (tooltip) return tooltip;
   tooltip = document.createElement('div');
-  tooltip.className = 'home-activity-tooltip';
+  // Trends shares the heatmap's layout and positioning, with its own instance.
+  tooltip.className = `home-activity-tooltip ${instanceClass}`;
   tooltip.setAttribute('role', 'tooltip');
   tooltip.setAttribute('aria-hidden', 'true');
 
@@ -6772,7 +7352,7 @@ function hideHomeActivityTooltip({ preserveHover = false } = {}) {
     state.homeActivityHoverPoint = null;
     state.homeActivityHoverDate = '';
     if (!teardown) {
-      const tooltip = document.querySelector('.home-activity-tooltip');
+      const tooltip = document.querySelector('.home-heatmap-tooltip');
       if (tooltip) {
         tooltip.dataset.visible = 'false';
         tooltip.setAttribute('aria-hidden', 'true');
@@ -6906,6 +7486,27 @@ function renderHomeTrendsModule() {
   return module;
 }
 
+// A plugin view on Home: the shell is ours, the body is the plugin's resolved
+// view, repainted in place by plugin pushes without re-rendering Home.
+function renderHomePluginModule(id) {
+  const option = homeModuleOptions().find((entry) => entry.id === id);
+  const ref = pluginPlacementsApi.refFromHomeToken(id);
+  const existing = [...els.homePanel.children].find(node => node.dataset.pluginRef === ref);
+  if (existing) {
+    existing.setAttribute('aria-label', option?.label || ref);
+    const label = existing.querySelector('.home-module-label'); if (label) label.textContent = option?.label || ref;
+    const meta = existing.querySelector('.home-module-meta'); if (meta) meta.textContent = option?.pluginName || '';
+    return existing;
+  }
+  const { module, body } = homeModuleShell('plugin', option?.label || ref, null, option?.pluginName || '');
+  module.dataset.pluginRef = ref;
+  const mount = document.createElement('div');
+  mount.className = 'home-plugin-body';
+  body.append(mount);
+  pluginViewHost?.mount(mount, ref, 'home');
+  return module;
+}
+
 function renderHome() {
   if (!els.homePanel) return;
   if (sessionTooltipShouldHoldRender()) {
@@ -6948,12 +7549,28 @@ function renderHome() {
     if (id === 'device') return renderHomeDeviceModule();
     if (id === 'model') return renderHomeModelModule(period);
     if (id === 'session') {
-      sessionRows = window.TokenMonitorEdgeDockPresentation.recentSessionRows(state.stats, 5, { ...sessionPresentationOptions(), includeRunningBeyondCap: true });
+      sessionRows = window.TokenMonitorEdgeDockPresentation.recentSessionRows(state.stats, homeModulePreferencesApi.homeModuleCount(state.settings, 'session'), { ...sessionPresentationOptions(), includeRunningBeyondCap: true });
       return renderHomeSessionModule(sessionRows);
     }
+    if (homeModulePreferencesApi.isPluginModuleId(id)) return renderHomePluginModule(id);
     return renderHomeTrendsModule();
   });
-  els.homePanel.replaceChildren(...nodes);
+  // Reconcile siblings without detaching retained plugin controls. Collector
+  // pushes must not discard focused drafts or cancel captured drawing gestures.
+  // A module-level selector places author controls beside the module. Reorder
+  // those outlets with their anchor instead of moving them back after rendering.
+  const ordered = nodes.flatMap(node => [node, ...pluginContent?.nodesFor(node) || []]);
+  ordered.forEach((node, index) => {
+    const current = els.homePanel.children[index];
+    if (node === current) return;
+    if (node.parentNode === els.homePanel && els.homePanel.moveBefore) els.homePanel.moveBefore(node, current || null);
+    else els.homePanel.insertBefore(node, current || null);
+  });
+  // Attach replacements before removing obsolete siblings: a synchronous layout
+  // must never observe the page with its retained content/scroll range missing.
+  for (const child of [...els.homePanel.children]) {
+    if (!ordered.includes(child)) child.remove();
+  }
   if (moduleIds.includes('session')) scheduleHomeSessionRepaint(sessionRows);
   // setupHomeActivityScroller first runs while its module is detached, where
   // scrollWidth can equal clientWidth. Apply again synchronously now that the DOM is
@@ -6988,6 +7605,7 @@ function setRendererSettings(next) {
     !== tokenNumberAnimationApi.normalize(next.tokenNumberAnimation);
   state.settings = next;
   if (animationChanged) {
+    pluginViewHost?.refreshMotion();
     cancelNumberAnimation();
     settleRowNumberAnimations();
     numberAnimValue = state.currentTotal;
@@ -7004,10 +7622,52 @@ function setRendererSettings(next) {
   if (titlesChanged) refreshSessionDetailHeading();
 }
 
+function periodContentAvailability() {
+  const derived = fixedPeriodRangesApi.isDerived(state.period);
+  return {
+    fixedUnavailable: derived && state.fixedPeriodSnapshot?.status !== 'ready',
+    detailUnavailable: derived && !fixedPeriodRangesApi.supportsBreakdown(state.period, state.breakdown, {
+      deviceHistoriesAvailable: Array.isArray(state.fixedPeriodHistory?.deviceHistories)
+    })
+  };
+}
+
 function render() {
+  renderAppContent();
+  // Composition supplies current native anchors/context below. Do not dispatch
+  // an extra update with the previous composition options first.
+  pluginViewHost?.refreshContext({ includeContent: false });
+  if (pluginContent) {
+    const target = `main.${state.breakdown}.content`;
+    const roots = { home: els.homePanel, limits: els.limitsPanel, trends: els.trendsPanel, status: els.serviceStatusPanel };
+    const native = state.breakdown === 'session' && state.openSession ? els.sessionDetail : roots[state.breakdown] || els.breakdown;
+    const visible = visibleStatsSurface() === 'main' && !isSettingsPanelOpen() && !isRendererWindowHidden() && !state.floatingBubble.collapsed;
+    pluginContent.retain(visible ? [target, 'main.navigation.content'] : []);
+    if (visible && !state.breakdown.startsWith('plugin:')) pluginContent.render(target, native, {
+      surface: 'page', period: state.period, source: state.settings?.hubMode, stats: state.stats,
+      navigate: openViewFromTray, session: state.openSession
+    });
+  }
+
+}
+function renderAppContent() {
   const surface = visibleStatsSurface();
   if (surface !== 'main') {
     if (!surface) statsRenderScheduler.request();
+    return;
+  }
+  ensureBreakdownVisible();
+  if (state.breakdown !== 'session' || state.openSession) els.sessionToolFilter.classList.add('hidden');
+  const pluginPage = pluginMainPages?.render(pluginPageOptions(), state.breakdown) || false;
+  els.shell.classList.toggle('plugin-page-mode', pluginPage);
+  if (pluginPage) {
+    stopHomeSessionRepaint(); stopSessionStatusRepaint(); stopServiceStatusTicker(); hideHomeActivityTooltip();
+    cancelNumberAnimation();
+    state.openSession = null;
+    for (const panel of [els.homePanel, els.breakdown, els.limitsPanel, els.trendsPanel, els.serviceStatusPanel,
+      els.sessionDetail, els.sessionDetailHead, els.sessionPagerHost, els.toolDetailFooter, els.projectBreakdownFooter, els.fixedPeriodMessage, els.viewBackRow]) panel?.classList.add('hidden');
+    els.shell.classList.remove('home-mode', 'session-mode');
+    renderViewSwitcher(); signalContentReady();
     return;
   }
   if (!state.stats) return;
@@ -7015,6 +7675,7 @@ function render() {
   stopHomeSessionRepaint();
   stopSessionStatusRepaint();
   els.toolDetailFooter.classList.add('hidden');
+  els.projectBreakdownFooter.classList.add('hidden');
   syncLiveTokenRateFooterState();
   renderSessionUsageArchiveStatus();
   ensureBreakdownVisible();
@@ -7039,12 +7700,9 @@ function render() {
   if (state.openSession && state.breakdown !== 'session') { state.openSession = null; els.sessionDetail.classList.add('hidden'); els.sessionDetail.replaceChildren(); els.sessionDetailHead.classList.add('hidden'); els.sessionDetailHead.replaceChildren(); }
   if (state.openSession) { els.sessionDetail.classList.remove('hidden'); els.sessionDetailHead.classList.remove('hidden'); } else { els.sessionDetail.classList.add('hidden'); els.sessionDetailHead.classList.add('hidden'); }
   const period = state.stats.periods?.[state.period] || { totalTokens: 0, costUsd: 0, clients: {} };
-  const fixedUnavailable = derivedPeriod && state.fixedPeriodSnapshot?.status !== 'ready';
-  const detailUnavailable = derivedPeriod
-    && !fixedPeriodRangesApi.supportsBreakdown(state.period, state.breakdown, {
-      deviceHistoriesAvailable: Array.isArray(state.fixedPeriodHistory?.deviceHistories)
-    });
+  const { fixedUnavailable, detailUnavailable } = periodContentAvailability();
   if (fixedUnavailable || detailUnavailable) {
+    els.sessionToolFilter.classList.add('hidden');
     cancelNumberAnimation();
     els.totalTokens.textContent = fixedUnavailable ? '—' : formatNumber(Number(period.totalTokens || 0));
     updateTotalCompact(fixedUnavailable ? 0 : Number(period.totalTokens || 0));
@@ -7094,6 +7752,7 @@ function render() {
   // Leaving Home only CSS-hides the panel, so its heatmap scroller never sees a
   // pointerleave — dismiss the body-level tooltip here (renderHome covers rerenders).
   if (state.breakdown !== 'home') hideHomeActivityTooltip();
+  if (state.breakdown !== 'trends') hideTrendTooltip();
   if (state.breakdown === 'status') ensureServiceStatusTicker(); else stopServiceStatusTicker();
   if (state.breakdown === 'home') {
     els.breakdown.classList.add('hidden');
@@ -7227,7 +7886,7 @@ function liveDotTitle(mode, connected) {
 
 function setLiveDot(connected) {
   els.liveDot.classList.toggle('live', Boolean(connected));
-  els.liveDot.title = liveDotTitle(state.mode, connected);
+  els.liveDot.setAttribute('aria-label', liveDotTitle(state.mode, connected));
   if (!connected) for (const animation of els.liveDot.getAnimations()) animation.cancel();
 }
 
@@ -7244,8 +7903,10 @@ function pulseLiveDot() {
 }
 
 function refreshButtonIdleTitle() {
-  if (state.stats?.updatedAt) return t('refreshButton.refreshedAt', { time: formatTime(state.stats.updatedAt) });
-  return t('refreshButton.label');
+  const action = t('refreshButton.label');
+  return state.stats?.updatedAt
+    ? `${action} · ${t('refreshButton.refreshedAt', { time: formatTime(state.stats.updatedAt) })}`
+    : action;
 }
 
 function clearRefreshButtonFeedbackTimer() {
@@ -7261,20 +7922,16 @@ function setRefreshButtonState(status = 'idle') {
   els.refreshButton.classList.toggle('is-refresh-error', status === 'error');
   els.refreshButton.disabled = status === 'refreshing';
   if (status === 'refreshing') {
-    els.refreshButton.title = t('refreshButton.refreshing');
     els.refreshButton.setAttribute('aria-label', t('refreshButton.refreshing'));
     els.refreshButton.setAttribute('aria-busy', 'true');
   } else if (status === 'refreshed') {
-    els.refreshButton.title = t('refreshButton.refreshed');
     els.refreshButton.setAttribute('aria-label', t('refreshButton.refreshed'));
     els.refreshButton.setAttribute('aria-busy', 'false');
   } else if (status === 'error') {
-    els.refreshButton.title = t('refreshButton.failed');
     els.refreshButton.setAttribute('aria-label', t('refreshButton.failed'));
     els.refreshButton.setAttribute('aria-busy', 'false');
   } else {
-    els.refreshButton.title = refreshButtonIdleTitle();
-    els.refreshButton.setAttribute('aria-label', t('refreshButton.label'));
+    els.refreshButton.setAttribute('aria-label', refreshButtonIdleTitle());
     els.refreshButton.removeAttribute('aria-busy');
   }
 }
@@ -7428,6 +8085,32 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, Number(value)));
 }
 
+function initFooterActionDisclosure() {
+  const actions = els.utilityActions?.closest('.footer-update-actions');
+  if (!actions) return;
+  // The footer group's width changes on every frame of the update's margin
+  // transition. Observe it so an open card follows both motion and instant
+  // reduced-motion changes without a permanent animation-frame loop.
+  const anchorObserver = new ResizeObserver(() => {
+    if (els.appUpdatePopover.matches(':popover-open')) positionAppUpdatePopover();
+  });
+  anchorObserver.observe(actions);
+  window.addEventListener('unload', () => anchorObserver.disconnect(), { once: true });
+  const reveal = () => actions.classList.add('is-disclosed');
+  const hide = () => actions.classList.remove('is-disclosed');
+  els.utilityActions.addEventListener('pointerenter', reveal);
+  actions.addEventListener('pointerleave', () => {
+    if (!actions.querySelector(':focus-visible')) hide();
+  });
+  actions.addEventListener('focusin', (event) => {
+    if (event.target.matches(':focus-visible') && els.utilityActions.contains(event.target)) reveal();
+  });
+  actions.addEventListener('focusout', (event) => {
+    if (!actions.contains(event.relatedTarget) && !actions.matches(':hover')) hide();
+  });
+  window.addEventListener('blur', () => hide());
+}
+
 function applyControlLayout(swapSettingsAndRefresh) {
   const footerSlot = document.getElementById('footerActionSlot');
   if (!footerSlot || !els.utilityActions) return;
@@ -7459,6 +8142,7 @@ function applyAppearanceSettings(settings) {
   const depth = (glassRenderingApi.usesNativeMaterial(nativeMaterialState) ? 32 : clamp(settings?.glassBlur ?? 32, 0, 100)) / 100;
   const systemGlassDisabled = settings?.systemGlass === false;
   const isWindows = navigator.userAgent.toLowerCase().includes('windows');
+  const isMac = navigator.userAgent.includes('Macintosh');
   const windowsGlass = windowsGlassApi.appearanceState(settings, { isWindows });
   const macGlass = macBackdropApi.appearanceState(settings, {
     liquidGlassSupported: nativeMaterialState.liquidGlassSupported
@@ -7471,6 +8155,15 @@ function applyAppearanceSettings(settings) {
   document.documentElement.style.setProperty('--control-alpha', (0.03 + depth * 0.045).toFixed(3));
   document.documentElement.classList.toggle('system-glass-disabled', systemGlassDisabled);
   const nativeMaterial = glassRenderingApi.usesNativeMaterial(nativeMaterialState);
+  const nativeTint = nativeMaterialState.type === 'liquid-glass';
+  els.glassOpacityRow?.classList.toggle('hidden', nativeTint);
+  for (const [key, mode] of nativeGlassTintSettings) {
+    const active = nativeTint && macGlass.backdropMode === mode;
+    els[`${key}Row`]?.classList.toggle('hidden', !active);
+    for (const control of [els[`${key}Input`], els[`${key}Reset`]]) {
+      if (control) control.disabled = !active;
+    }
+  }
   for (const control of [els.glassInput, els.blurInput, els.resetGlassButton, els.resetDepthButton]) {
     if (control) control.disabled = nativeMaterial;
   }
@@ -7483,7 +8176,7 @@ function applyAppearanceSettings(settings) {
   }
   if (els.windowsBackdropNote) {
     const accentFallback = windowsGlass.showAccentNote
-      && new URLSearchParams(window.location.search).get('windowsBackdropFallback') === '1';
+      && (settings?.windowsBackdropFallback ?? state.settings?.windowsBackdropFallback) === true;
     els.windowsBackdropNote.textContent = t(accentFallback
       ? 'settings.appearance.windowsBackdropFallback'
       : 'settings.appearance.windowsBackdropNote');
@@ -7491,8 +8184,12 @@ function applyAppearanceSettings(settings) {
     els.windowsBackdropNote.classList.toggle('hidden', !windowsGlass.showAccentNote);
   }
   els.macBackdropRow?.classList.toggle('hidden', !macGlass.showBackdropControl);
-  // Same terms as the widget's own selector; material pushes land here too.
-  els.edgeDockMacBackdropRow?.classList.toggle('hidden', !macGlass.showBackdropControl);
+  // The dock's own style overrides System Glass either way, so its selectors
+  // stay available on every macOS and Windows; material pushes land here too.
+  els.edgeDockMacBackdropRow?.classList.toggle('hidden', !isMac);
+  syncEdgeDockMacBackdropInput(settings);
+  syncNotchStyleInput(settings);
+  els.edgeDockWindowsBackdropRow?.classList.toggle('hidden', !isWindows);
   if (els.macBackdropInput) els.macBackdropInput.value = macGlass.backdropMode;
   applyReduceMotionPreference(settings?.reduceMotion);
   applyFontSettings(settings);
@@ -7680,7 +8377,7 @@ function renderThemePresetChips() {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'theme-preset-chip';
-    chip.classList.toggle('active', preset.id === activeId);
+    chip.classList.toggle('active', !state.settings?.pluginAuthorSkin && preset.id === activeId);
     chip.dataset.presetId = preset.id;
     const dot = document.createElement('span');
     dot.className = 'theme-preset-dot';
@@ -7690,6 +8387,28 @@ function renderThemePresetChips() {
     chip.append(dot, label);
     chip.addEventListener('click', () => selectThemePreset(preset.id));
     els.themePresetChips.appendChild(chip);
+  }
+  // Skins from active plugins sit beside the built-in presets; applying one
+  // writes ordinary theme colours, so it survives the plugin being removed.
+  for (const plugin of state.pluginCatalog?.plugins || []) {
+    if (plugin.status !== 'active') continue;
+    for (const skin of plugin.skins || []) {
+      const colors = themePresetsApi.mergeThemeColors({ ...state.settings?.themeColors, ...skin.colors });
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'theme-preset-chip theme-preset-chip-plugin';
+      chip.dataset.pluginSkin = JSON.stringify(skin);
+      chip.classList.toggle('active', state.settings?.pluginAuthorSkin?.ref === skin.ref);
+      chip.setAttribute('aria-description', t('settings.plugins.skinFrom', { name: plugin.name }));
+      const dot = document.createElement('span');
+      dot.className = 'theme-preset-dot';
+      dot.style.background = colors.accent;
+      const label = document.createElement('span');
+      label.textContent = skin.name;
+      chip.append(dot, label);
+      chip.addEventListener('click', () => void applyAppearancePluginSkin(skin, chip));
+      els.themePresetChips.appendChild(chip);
+    }
   }
 }
 
@@ -7713,7 +8432,7 @@ function renderThemeColorGrid() {
     reset.type = 'button';
     reset.className = 'reset-appearance-button reset-inline';
     reset.textContent = '↺';
-    reset.title = t('settings.appearance.resetColor');
+    reset.setAttribute('aria-label', t('settings.appearance.resetColor'));
     reset.addEventListener('click', () => resetThemeColor(key));
     row.append(name, input, reset);
     els.themeColorGrid.appendChild(row);
@@ -7741,7 +8460,7 @@ function renderVendorColorList() {
     reset.type = 'button';
     reset.className = 'reset-appearance-button reset-inline';
     reset.textContent = '↺';
-    reset.title = t('settings.appearance.resetBrand');
+    reset.setAttribute('aria-label', t('settings.appearance.resetBrand'));
     reset.addEventListener('click', () => resetVendorColor(id));
     row.append(name, input, reset);
     els.vendorColorList.appendChild(row);
@@ -7785,15 +8504,15 @@ async function selectThemePreset(presetId) {
   for (const key of themePresetsApi.INTERFACE_COLOR_KEYS) {
     if (preset.colors[key] !== themePresetsApi.DEFAULT_THEME[key]) next[key] = preset.colors[key];
   }
-  await commitThemeColors(next);
+  await commitThemeColors(next, true);
 }
 
-async function commitThemeColors(overrides) {
+async function commitThemeColors(overrides, resetPluginStyle = false) {
   state.settings.themeColors = overrides;
   applyThemeColors(overrides);
   buildAppearanceColorControls();
   renderSettingsSummaries();
-  await saveSettings({ themeColors: overrides });
+  await saveSettings({ themeColors: overrides, ...(resetPluginStyle ? { pluginSkinRef: null } : {}) });
 }
 
 function showThemeCodeStatus(key, type = '') {
@@ -7913,7 +8632,6 @@ function syncWindowBehaviorControls() {
     current: t(`settings.windowBehavior.${mode}`),
     next: t(`settings.windowBehavior.${next}`)
   });
-  els.pinButton.title = title;
   els.pinButton.setAttribute('aria-label', title);
   // Windows-only, and only meaningful while the widget is pinned above apps:
   // the other modes never sit over the taskbar in the first place.
@@ -7933,6 +8651,7 @@ function syncWindowShortcutStatus() {
   const status = state.settings?.windowToggleShortcutStatus?.state || (shortcut ? 'unregistered' : 'off');
   value.classList.toggle('recording', state.recordingWindowShortcut);
   value.textContent = state.recordingWindowShortcut ? t('settings.shortcut.recording') : display;
+  value.setAttribute('aria-description', t('settings.shortcut.record'));
   if (clearButton) clearButton.disabled = !shortcut && !state.recordingWindowShortcut;
   note.classList.toggle('error', state.windowShortcutInvalid || (Boolean(shortcut) && status !== 'registered'));
   if (state.recordingWindowShortcut) {
@@ -7995,6 +8714,7 @@ function applyFloatingBubbleState(payload = {}, options = {}) {
   const wasCollapsed = state.floatingBubble.collapsed;
   const side = payload?.collapsed && ['left', 'right'].includes(payload.side) ? payload.side : null;
   state.floatingBubble = { collapsed: Boolean(side), side };
+  syncPluginTrayDemand();
   if (isRendererWindowHidden()) {
     statsRenderScheduler.request();
     return;
@@ -8005,12 +8725,11 @@ function applyFloatingBubbleState(payload = {}, options = {}) {
   document.body.classList.toggle('floating-bubble-collapsed-right', side === 'right');
   const title = t('floatingBubble.expand');
   if (els.floatingBubbleTab) {
-    els.floatingBubbleTab.title = title;
     els.floatingBubbleTab.setAttribute('aria-label', title);
   }
   if (options.renderContent === false) return;
   if (wasCollapsed && !state.floatingBubble.collapsed) {
-    if (isSettingsPanelOpen()) syncSettingsForm();
+    if (isSettingsPanelOpen() && !isNativeWindowTransfer()) syncSettingsForm();
     renderStatsUpdate();
   } else {
     renderFloatingBubbleContent();
@@ -8262,6 +8981,9 @@ function appearancePatchFromControls() {
     settingsInTitlebar: Boolean(els.swapSettingsRefreshInput.checked),
     glassOpacity: Number(els.glassInput.value === '' ? defaultAppearance.glassOpacity : els.glassInput.value),
     glassBlur: Number(els.blurInput.value === '' ? defaultAppearance.glassBlur : els.blurInput.value),
+    ...Object.fromEntries(nativeGlassTintSettings.map(([key, mode]) => [key,
+      macBackdropApi.normalizeLiquidGlassTint(els[`${key}Input`]?.value, mode)
+    ])),
     backgroundImageOpacity: Number(els.backgroundImageOpacityInput?.value || defaultAppearance.backgroundImageOpacity),
     zoomFactor: Number(els.zoomInput.value === '' ? defaultAppearance.zoomFactor * 100 : els.zoomInput.value) / 100
   };
@@ -8364,6 +9086,7 @@ function syncSliderRow(input) {
 
 function syncSliderRows() {
   syncSliderRow(els.glassInput);
+  for (const [key] of nativeGlassTintSettings) syncSliderRow(els[`${key}Input`]);
   syncSliderRow(els.blurInput);
   syncSliderRow(els.backgroundImageOpacityInput);
   syncSliderRow(els.zoomInput);
@@ -8489,6 +9212,8 @@ function renderSyncPanel() {
   const hubMode = state.settings?.hubMode || 'local';
   const shared = SHARED_SYNC_MODES.has(hubMode)
     && (hubMode !== 'icloud' || state.appInfo?.platform === 'darwin');
+  if (els.deviceIconLocalRow) els.deviceIconLocalRow.hidden = shared && state.mode === 'sync'
+    && state.stats?.devices?.some(device => device.deviceId === state.settings?.deviceId);
   els.syncDevicePanel.hidden = !shared;
   if (!shared) {
     syncPanelRows = [];
@@ -8553,7 +9278,7 @@ function updateSyncPanelAges() {
     if (!row) continue;
     element.textContent = syncPanelPresenceText(row);
     const date = row.syncedAt ? new Date(row.syncedAt) : null;
-    element.title = date && !Number.isNaN(date.getTime()) ? date.toLocaleString(currentLocale()) : '';
+    element.setAttribute('aria-description', date && !Number.isNaN(date.getTime()) ? date.toLocaleString(currentLocale()) : '');
   }
 }
 
@@ -8582,6 +9307,7 @@ function renderSyncPanelDevices(rows) {
     state.settings?.hubHostPort, state.settings?.hubHostSecret
   ]);
   if (scope !== syncPanelListScope) {
+    for (const select of list.querySelectorAll('.device-icon-select')) deviceIconsApi.destroyDeviceIconSelect(select);
     for (const remove of list.querySelectorAll('.device-delete-button')) resetDeviceDeleteConfirmation(remove);
     list.replaceChildren();
     syncPanelListScope = scope;
@@ -8590,6 +9316,8 @@ function renderSyncPanelDevices(rows) {
   const wanted = new Set(rows.map(row => row.key));
   for (const [key, item] of existing) {
     if (wanted.has(key)) continue;
+    const select = item.querySelector('.device-icon-select');
+    if (select) deviceIconsApi.destroyDeviceIconSelect(select);
     const remove = item.querySelector('.device-delete-button');
     if (remove) resetDeviceDeleteConfirmation(remove);
     item.remove();
@@ -8654,8 +9382,20 @@ function syncDeviceRow(row) {
   return item;
 }
 
+let deviceIconSave = Promise.resolve();
+function saveDeviceIcon(deviceId, kind, detectedKind) {
+  const scope = state.settings.deviceIconScope || 'local';
+  const save = deviceIconSave.then(() => saveSettings(deviceIconsApi.deviceIconPatch(
+    { ...state.settings, deviceIconScope: scope }, deviceId, kind, detectedKind
+  )));
+  deviceIconSave = save.catch(() => {});
+  return save;
+}
+
 function updateSyncDeviceRow(item, row) {
+  const iconKind = deviceIconsApi.deviceIconKind(state.settings, { ...row, deviceId: row.key });
   const signature = JSON.stringify([
+    iconKind, row.deviceKind, deviceIconsApi.deviceIconOverride(state.settings, row.key), state.settings?.deviceIconScope,
     currentLocale(), row.name, row.hostname, row.platform, row.osName, row.osVersion,
     row.agentVersion, row.agentRuntime, row.isLocal, row.stale, row.canRemove,
     devicesBeingDeleted.has(row.key), Boolean(window.tokenMonitor.deleteDevice)
@@ -8668,7 +9408,7 @@ function updateSyncDeviceRow(item, row) {
   mark.className = os ? `sync-device-mark row-icon row-icon-os-${os}` : 'sync-device-mark sync-device-mark-generic';
   const name = item.querySelector('.sync-device-name');
   name.textContent = row.name;
-  name.title = row.hostname && row.hostname !== row.name ? `${row.name} · ${row.hostname}` : row.name;
+  name.setAttribute('aria-label', row.hostname && row.hostname !== row.name ? `${row.name} · ${row.hostname}` : row.name);
   const title = item.querySelector('.sync-device-title');
   let badge = title.querySelector('.sync-device-badge');
   if (row.isLocal) {
@@ -8684,6 +9424,29 @@ function updateSyncDeviceRow(item, row) {
     [deviceRuntimeLabel(row.agentRuntime), row.agentVersion ? `v${row.agentVersion}` : ''].filter(Boolean).join(' ')
   ].filter(Boolean).join(' · ');
   const side = item.querySelector('.sync-device-side');
+  let iconSelect = item.querySelector('.device-icon-select');
+  if (!iconSelect) {
+    const control = document.createElement('span');
+    control.className = 'sync-device-icon-control';
+    iconSelect = document.createElement('select');
+    iconSelect.className = 'device-icon-select';
+    iconSelect.addEventListener('change', async () => {
+      iconSelect.disabled = true;
+      deviceIconsApi.syncDeviceIconSelect(iconSelect);
+      try { await saveDeviceIcon(row.key, iconSelect.value, iconSelect.dataset.detectedKind); }
+      finally {
+        iconSelect.disabled = false;
+        iconSelect.value = deviceIconsApi.deviceIconKind(state.settings, { deviceId: row.key, deviceKind: iconSelect.dataset.detectedKind });
+        deviceIconsApi.syncDeviceIconSelect(iconSelect);
+      }
+    });
+    control.append(iconSelect);
+    title.append(control);
+  }
+  iconSelect.setAttribute('aria-label', `${t('devices.icon.label')} · ${row.name}`);
+  deviceIconsApi.populateDeviceIconSelect(iconSelect, t, row.deviceKind);
+  iconSelect.value = iconKind;
+  deviceIconsApi.syncDeviceIconSelect(iconSelect);
   let remove = side.querySelector('.device-delete-button');
   if (row.canRemove && row.stale && !row.isLocal && window.tokenMonitor.deleteDevice) {
     if (!remove) {
@@ -8754,7 +9517,7 @@ function renderHubAddresses(addresses, port) {
     const copy = document.createElement('button');
     copy.type = 'button';
     copy.className = 'icon-button';
-    copy.title = t('settings.sync.copyUrl', { url });
+    copy.setAttribute('aria-label', t('settings.sync.copyUrl', { url }));
     copy.textContent = '⧉';
     copy.addEventListener('click', () => copyToClipboard(url, copy));
     row.append(code, ifaceLabel, copy);
@@ -9000,6 +9763,13 @@ function syncHubDraftFields() {
   }
   syncHubConnectionUi();
   syncHubSaveButton();
+  const iconSelect = els.deviceIconInput;
+  if (iconSelect && !iconSelect.disabled) {
+    const localDevice = state.stats?.devices?.find(device => device.deviceId === state.settings?.deviceId);
+    deviceIconsApi.populateDeviceIconSelect(iconSelect, t, localDevice?.deviceKind);
+    iconSelect.value = deviceIconsApi.deviceIconKind(state.settings, { deviceId: state.settings?.deviceId, deviceKind: localDevice?.deviceKind });
+    deviceIconsApi.syncDeviceIconSelect(iconSelect);
+  }
 }
 
 // Keep this aligned with main's normalizeHubPort: dirty state must describe
@@ -9122,6 +9892,7 @@ function syncSettingsForm() {
   const modelRankingMetric = usageAttributionRowsApi.normalizeRankingMetric(state.settings?.modelRankingMetric);
   for (const input of els.modelRankingMetricInputs || []) input.checked = input.value === modelRankingMetric;
   syncCurrencyRateControls();
+  syncNetworkProxyControls();
   syncHubDraftFields();
   els.limitsRefreshInput.value = state.settings.limitsRefreshMode === 'adaptive'
     ? 'adaptive'
@@ -9206,16 +9977,16 @@ function syncSettingsForm() {
   for (const input of els.floatingBubbleTriggerInputs || []) input.checked = input.value === floatingBubbleTrigger;
   if (els.floatingBubbleContentInput) els.floatingBubbleContentInput.value = normalizeTrayContentValue(state.settings.floatingBubbleContent);
   els.floatingBubbleOptions?.classList.toggle('hidden', state.settings.floatingBubbleEnabled !== true);
-  syncEdgeDockControls();
+  syncDockControls();
   const showTrayIcon = state.settings.showTrayIcon !== false;
   if (els.showTrayIconInput) els.showTrayIconInput.checked = showTrayIcon;
   els.trayModeInput.disabled = !showTrayIcon;
   els.trayModeInput.checked = showTrayIcon && Boolean(state.settings.trayMode);
   syncHideAppIconControl(showTrayIcon, els.trayModeInput.checked);
   els.trayContentInput.value = ['tokens', 'cost', 'both', 'tokensAll', 'costAll', 'bothAll', 'limitsAllSessions', 'liveTokenRate', 'bars', 'barsSession', 'barsWeekly', 'barsAllSessions', 'icon', 'custom'].includes(state.settings.trayContent) ? state.settings.trayContent : 'tokens';
-  els.trayContentInput.disabled = !showTrayIcon;
+  els.trayContentInput.disabled = false;
   els.showTrayProviderBadgeInput.checked = state.settings.showTrayProviderBadge === true;
-  els.showTrayProviderBadgeInput.disabled = !showTrayIcon;
+  els.showTrayProviderBadgeInput.disabled = false;
   els.trayIconOptions?.classList.toggle('hidden', !showTrayIcon);
   els.trayOptions?.classList.toggle('hidden', !showTrayIcon || !state.settings.trayMode);
   refreshTrayComposers();
@@ -9232,6 +10003,9 @@ function syncSettingsForm() {
         : t('settings.startup.launchAtSignIn');
   }
   els.glassInput.value = String(state.settings.glassOpacity ?? 68);
+  for (const [key, mode] of nativeGlassTintSettings) {
+    if (els[`${key}Input`]) els[`${key}Input`].value = String(macBackdropApi.normalizeLiquidGlassTint(state.settings[key], mode));
+  }
   els.blurInput.value = String(state.settings.glassBlur ?? 32);
   if (els.backgroundImageOpacityInput) els.backgroundImageOpacityInput.value = String(state.settings.backgroundImageOpacity ?? defaultAppearance.backgroundImageOpacity);
   els.zoomInput.value = String(Math.round((Number(state.settings.zoomFactor) || 1) * 100));
@@ -9263,6 +10037,7 @@ function syncSettingsForm() {
   }
   modelAliasForm?.syncSettings();
   renderCursorStatus();
+  displaySettings?.sync();
 }
 
 function enabledClientSet() {
@@ -9288,7 +10063,7 @@ function disabledViewIds() {
 }
 
 function hiddenHomeModuleSet() {
-  return new Set(homeModulePreferencesApi.normalizeHiddenHomeModules(state.settings?.hiddenHomeModules, HOME_MODULE_OPTIONS).split(',').filter(Boolean));
+  return new Set(homeModulePreferencesApi.normalizeHiddenHomeModules(state.settings?.hiddenHomeModules, homeModuleOptions()).split(',').filter(Boolean));
 }
 
 function hiddenHomeLimitProviderSet() {
@@ -9381,9 +10156,9 @@ function applyPreferenceOrder(kind, order) {
     if (!row) continue;
     list.appendChild(row);
     const companionId = kind === 'view'
-      ? ({ home: 'homeSettingsContainer', trends: 'trendSettingsContainer', project: 'projectSettingsContainer', session: 'sessionSettingsContainer', status: 'serviceProvidersContainer' })[id]
+      ? ({ home: 'homeSettingsContainer', limits: 'limitsViewSettingsContainer', trends: 'trendSettingsContainer', project: 'projectSettingsContainer', session: 'sessionSettingsContainer', status: 'serviceProvidersContainer' })[id]
       : kind === 'homeModule'
-        ? ({ limits: 'homeLimitProviderContainer', trends: 'homeActivitySettingsContainer' })[id]
+        ? HOME_MODULE_SUBGROUPS[id]?.[1]
         : '';
     const companion = companionId ? document.getElementById(companionId) : null;
     if (companion) list.appendChild(companion);
@@ -9402,8 +10177,7 @@ function createPreferenceOrderHandle({ kind, id, label, count }) {
       : kind === 'homeModule'
         ? 'settings.home.reorderModule'
         : 'settings.home.reorderProvider';
-  handle.title = t(titleKey, { name: label });
-  handle.setAttribute('aria-label', handle.title);
+  handle.setAttribute('aria-label', t(titleKey, { name: label }));
   handle.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End');
   handle.disabled = count <= 1;
   // Main-screen lists keep the handle as both the visible reorder affordance
@@ -9414,6 +10188,7 @@ function createPreferenceOrderHandle({ kind, id, label, count }) {
 }
 
 const VIEW_PREFERENCE_SUBGROUPS = {
+  limits: ['limitsViewSettingsExpanded', 'limitsViewSettingsContainer'],
   home: ['homeSettingsExpanded', 'homeSettingsContainer'],
   trends: ['trendSettingsExpanded', 'trendSettingsContainer'],
   project: ['projectSettingsExpanded', 'projectSettingsContainer'],
@@ -9423,7 +10198,11 @@ const VIEW_PREFERENCE_SUBGROUPS = {
 
 const HOME_MODULE_SUBGROUPS = {
   limits: ['homeLimitSettingsExpanded', 'homeLimitProviderContainer'],
-  trends: ['homeActivitySettingsExpanded', 'homeActivitySettingsContainer']
+  trends: ['homeActivitySettingsExpanded', 'homeActivitySettingsContainer'],
+  tool: ['homeToolSettingsExpanded', 'homeToolSettingsContainer'],
+  model: ['homeModelSettingsExpanded', 'homeModelSettingsContainer'],
+  session: ['homeSessionSettingsExpanded', 'homeSessionSettingsContainer'],
+  device: ['homeDeviceSettingsExpanded', 'homeDeviceSettingsContainer']
 };
 
 function expandedPreferenceSubgroups(definitions) {
@@ -9481,7 +10260,16 @@ function createMainPreferenceRowDrag({ kind, rowSelector, idKey, settingKey, get
     applyOrder: (order) => applyPreferenceOrder(kind, order),
     preserveScroll: preserveSettingsPanelScroll,
     mirrorOrder: (order) => {
-      const value = order.join(',');
+      // Inactive plugin placements are absent from the rendered Home rows.
+      // Refill only visible slots so a drag cannot silently remove a placement.
+      let merged = order;
+      if (kind === 'homeModule') {
+        const visible = new Set(order);
+        let index = 0;
+        merged = homeModulePreferencesApi.normalizeHomeModuleOrder(state.settings?.homeModuleOrder, HOME_MODULE_OPTIONS)
+          .map((id) => visible.has(id) ? order[index++] : id);
+      }
+      const value = merged.join(',');
       state.settings = { ...state.settings, [settingKey]: value };
       return value;
     },
@@ -9591,8 +10379,7 @@ function renderViewPreferences() {
     visibility.type = 'button';
     visibility.className = `tool-visibility-button${isEffectivelyHidden ? ' is-hidden' : ''}`;
     visibility.dataset.view = id;
-    visibility.title = t(isEffectivelyHidden ? 'settings.views.showView' : 'settings.views.hideView', { name: label });
-    visibility.setAttribute('aria-label', visibility.title);
+    visibility.setAttribute('aria-label', t(isEffectivelyHidden ? 'settings.views.showView' : 'settings.views.hideView', { name: label }));
     visibility.setAttribute('aria-pressed', String(!isEffectivelyHidden));
     visibility.disabled = !isEffectivelyHidden && visibleCount <= 1;
     visibility.append(visibilityIcon(isEffectivelyHidden));
@@ -9608,13 +10395,35 @@ function renderViewPreferences() {
     row.append(name, actions);
     row.addEventListener('pointerdown', (event) => viewPreferenceRowDrag.startRowDrag(event, id));
     els.viewDisplayList.appendChild(row);
+    if (id === 'limits') {
+      row.classList.add('has-subgroup');
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = `view-subgroup-toggle${state.limitsViewSettingsExpanded ? ' is-expanded' : ''}`;
+      toggle.setAttribute('aria-label', t('settings.views.configureLimits', { name: label }));
+      toggle.setAttribute('aria-expanded', String(Boolean(state.limitsViewSettingsExpanded)));
+      const toggleIcon = document.createElement('span');
+      toggleIcon.className = 'view-subgroup-icon';
+      toggleIcon.setAttribute('aria-hidden', 'true');
+      toggle.append(toggleIcon);
+      toggle.addEventListener('click', () => togglePreferenceSubgroup(VIEW_PREFERENCE_SUBGROUPS, '.view-preference-row', id));
+      actions.insertBefore(toggle, visibility);
+
+      const listContainer = document.createElement('div');
+      listContainer.id = 'limitsViewSettingsContainer';
+      listContainer.className = `accordion-animated-container${state.limitsViewSettingsExpanded ? '' : ' hidden'}`;
+      const inner = document.createElement('div');
+      inner.className = 'accordion-animation-inner';
+      inner.appendChild(renderLimitsViewSettingsList());
+      listContainer.appendChild(inner);
+      els.viewDisplayList.appendChild(listContainer);
+    }
     if (id === 'home') {
       row.classList.add('has-subgroup');
       const toggle = document.createElement('button');
       toggle.type = 'button';
       toggle.className = `view-subgroup-toggle${state.homeSettingsExpanded ? ' is-expanded' : ''}`;
-      toggle.title = t('settings.views.configureHome', { name: label });
-      toggle.setAttribute('aria-label', toggle.title);
+      toggle.setAttribute('aria-label', t('settings.views.configureHome', { name: label }));
       toggle.setAttribute('aria-expanded', String(Boolean(state.homeSettingsExpanded)));
       const toggleIcon = document.createElement('span');
       toggleIcon.className = 'view-subgroup-icon';
@@ -9637,8 +10446,7 @@ function renderViewPreferences() {
       const toggle = document.createElement('button');
       toggle.type = 'button';
       toggle.className = `view-subgroup-toggle${state.trendSettingsExpanded ? ' is-expanded' : ''}`;
-      toggle.title = t('settings.views.configureTrend', { name: label });
-      toggle.setAttribute('aria-label', toggle.title);
+      toggle.setAttribute('aria-label', t('settings.views.configureTrend', { name: label }));
       toggle.setAttribute('aria-expanded', String(Boolean(state.trendSettingsExpanded)));
       const toggleIcon = document.createElement('span');
       toggleIcon.className = 'view-subgroup-icon';
@@ -9661,8 +10469,7 @@ function renderViewPreferences() {
       const toggle = document.createElement('button');
       toggle.type = 'button';
       toggle.className = `view-subgroup-toggle${state.projectSettingsExpanded ? ' is-expanded' : ''}`;
-      toggle.title = t('settings.views.configureProject', { name: label });
-      toggle.setAttribute('aria-label', toggle.title);
+      toggle.setAttribute('aria-label', t('settings.views.configureProject', { name: label }));
       toggle.setAttribute('aria-expanded', String(Boolean(state.projectSettingsExpanded)));
       const toggleIcon = document.createElement('span');
       toggleIcon.className = 'view-subgroup-icon';
@@ -9685,8 +10492,7 @@ function renderViewPreferences() {
       const toggle = document.createElement('button');
       toggle.type = 'button';
       toggle.className = `view-subgroup-toggle${state.sessionSettingsExpanded ? ' is-expanded' : ''}`;
-      toggle.title = t('settings.views.configureSession', { name: label });
-      toggle.setAttribute('aria-label', toggle.title);
+      toggle.setAttribute('aria-label', t('settings.views.configureSession', { name: label }));
       toggle.setAttribute('aria-expanded', String(Boolean(state.sessionSettingsExpanded)));
       const toggleIcon = document.createElement('span');
       toggleIcon.className = 'view-subgroup-icon';
@@ -9709,8 +10515,7 @@ function renderViewPreferences() {
       const toggle = document.createElement('button');
       toggle.type = 'button';
       toggle.className = `view-subgroup-toggle${state.serviceProvidersExpanded ? ' is-expanded' : ''}`;
-      toggle.title = t('serviceStatus.configureProviders', { name: label });
-      toggle.setAttribute('aria-label', toggle.title);
+      toggle.setAttribute('aria-label', t('serviceStatus.configureProviders', { name: label }));
       toggle.setAttribute('aria-expanded', String(Boolean(state.serviceProvidersExpanded)));
       const toggleIcon = document.createElement('span');
       toggleIcon.className = 'view-subgroup-icon';
@@ -9787,7 +10592,7 @@ function renderHomeLimitProviderList() {
     requiredReasonText.className = 'home-limit-provider-names-reason';
     requiredReasonText.textContent = requiredReason;
     providerNamesCopy.append(requiredReasonText);
-    providerNamesLabel.title = requiredReason;
+    providerNamesLabel.setAttribute('aria-description', requiredReason);
     providerNamesInput.setAttribute('aria-describedby', requiredReasonText.id);
   }
   providerNamesInput.addEventListener('change', async () => {
@@ -9826,8 +10631,7 @@ function renderHomeLimitProviderList() {
   reset.type = 'button';
   reset.className = 'tool-header-action';
   reset.textContent = '↺';
-  reset.title = t('settings.views.resetOrder');
-  reset.setAttribute('aria-label', reset.title);
+  reset.setAttribute('aria-label', t('settings.views.resetOrder'));
   reset.disabled = !hasCustomOrder;
   reset.addEventListener('click', () => void resetHomeLimitProviderOrder());
   const showAll = document.createElement('button');
@@ -9837,8 +10641,7 @@ function renderHomeLimitProviderList() {
   showAllEye.className = 'tool-header-eye';
   showAllEye.setAttribute('aria-hidden', 'true');
   showAll.append(showAllEye);
-  showAll.title = t('settings.views.showAll');
-  showAll.setAttribute('aria-label', showAll.title);
+  showAll.setAttribute('aria-label', t('settings.views.showAll'));
   showAll.disabled = providers.every(({ id }) => !hidden.has(id));
   showAll.addEventListener('click', () => void showAllHomeLimitProviders());
   headerActions.append(reset, showAll);
@@ -9859,8 +10662,7 @@ function renderHomeLimitProviderList() {
     const visibility = document.createElement('button');
     visibility.type = 'button';
     visibility.className = `tool-visibility-button${isHidden ? ' is-hidden' : ''}`;
-    visibility.title = t(isHidden ? 'settings.home.showProvider' : 'settings.home.hideProvider', { name: settingsLabel || label });
-    visibility.setAttribute('aria-label', visibility.title);
+    visibility.setAttribute('aria-label', t(isHidden ? 'settings.home.showProvider' : 'settings.home.hideProvider', { name: settingsLabel || label }));
     visibility.setAttribute('aria-pressed', String(!isHidden));
     visibility.append(visibilityIcon(isHidden));
     visibility.addEventListener('click', () => onHomeLimitProviderVisibilityToggle(id));
@@ -9875,13 +10677,56 @@ function renderHomeLimitProviderList() {
   return wrap;
 }
 
+function renderHomeModuleCountSettings(id) {
+  const wrap = document.createElement('div');
+  wrap.className = 'settings-nested-list';
+  const label = document.createElement('label');
+  label.className = 'settings-item home-module-count-setting';
+  const text = document.createElement('span');
+  text.className = 'settings-item-text';
+  const title = document.createElement('span');
+  title.className = 'settings-item-title';
+  title.textContent = t('settings.home.itemCount');
+  text.append(title);
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.min = '1';
+  input.max = String(homeModulePreferencesApi.HOME_MODULE_COUNT_MAX);
+  input.step = '1';
+  input.inputMode = 'numeric';
+  input.value = String(homeModulePreferencesApi.homeModuleCount(state.settings, id));
+  input.addEventListener('change', async () => {
+    const counts = homeModulePreferencesApi.normalizeHomeModuleCounts({ [id]: input.value }, state.settings?.homeModuleCounts);
+    input.value = String(counts[id]);
+    try {
+      await saveSettings({ homeModuleCounts: { [id]: counts[id] } });
+    } catch (_) {
+      // saveSettings reports the failure and restores persisted settings and UI.
+      return;
+    }
+    renderHomeIfVisible();
+  });
+  label.append(text, input);
+  wrap.append(label);
+  if (id === 'session') {
+    const note = document.createElement('p');
+    note.id = 'homeSessionCountNote';
+    note.className = 'settings-note';
+    note.textContent = t('settings.home.sessionCountNote');
+    input.setAttribute('aria-describedby', note.id);
+    wrap.append(note);
+  }
+  return wrap;
+}
+
 function renderHomeSettingsList() {
   const wrap = document.createElement('div');
   wrap.id = 'homeSettingsList';
   wrap.className = 'settings-nested-list home-settings-list';
   const hidden = hiddenHomeModuleSet();
-  const modules = homeModulePreferencesApi.orderedHomeModules(HOME_MODULE_OPTIONS, state.settings?.homeModuleOrder);
-  const hasCustomOrder = homeModulePreferencesApi.normalizeHomeModuleOrder(state.settings?.homeModuleOrder, HOME_MODULE_OPTIONS).join(',') !== homeModulePreferencesApi.DEFAULT_HOME_MODULE_ORDER;
+  const modules = homeModulePreferencesApi.orderedHomeModules(homeModuleOptions(), state.settings?.homeModuleOrder);
+  const hasCustomOrder = homeModulePreferencesApi.normalizeHomeModuleOrder(state.settings?.homeModuleOrder, HOME_MODULE_OPTIONS)
+    .filter((id) => !homeModulePreferencesApi.isPluginModuleId(id)).join(',') !== homeModulePreferencesApi.DEFAULT_HOME_MODULE_ORDER;
   const header = document.createElement('div');
   header.className = 'settings-note-row home-settings-header';
   const note = document.createElement('p');
@@ -9893,8 +10738,7 @@ function renderHomeSettingsList() {
   reset.type = 'button';
   reset.className = 'tool-header-action';
   reset.textContent = '↺';
-  reset.title = t('settings.views.resetOrder');
-  reset.setAttribute('aria-label', reset.title);
+  reset.setAttribute('aria-label', t('settings.views.resetOrder'));
   reset.disabled = !hasCustomOrder;
   reset.addEventListener('click', () => void resetHomeModuleOrder());
   const showAll = document.createElement('button');
@@ -9904,8 +10748,7 @@ function renderHomeSettingsList() {
   showAllEye.className = 'tool-header-eye';
   showAllEye.setAttribute('aria-hidden', 'true');
   showAll.append(showAllEye);
-  showAll.title = t('settings.views.showAll');
-  showAll.setAttribute('aria-label', showAll.title);
+  showAll.setAttribute('aria-label', t('settings.views.showAll'));
   showAll.disabled = hidden.size === 0;
   showAll.addEventListener('click', () => void showAllHomeModules());
   headerActions.append(reset, showAll);
@@ -9913,7 +10756,7 @@ function renderHomeSettingsList() {
   wrap.append(header);
   for (const moduleOption of modules) {
     const id = moduleOption.id;
-    const label = t(moduleOption.labelKey);
+    const label = moduleOption.label || t(moduleOption.labelKey);
     const isHidden = hidden.has(id);
     const row = document.createElement('div');
     row.className = 'home-module-preference-row';
@@ -9924,13 +10767,13 @@ function renderHomeSettingsList() {
     name.textContent = label;
     const actions = document.createElement('div');
     actions.className = 'tool-preference-actions';
-    if (id === 'limits' || id === 'trends') {
+    if (HOME_MODULE_SUBGROUPS[id]) {
       const configure = document.createElement('button');
       configure.type = 'button';
-      const expanded = id === 'limits' ? state.homeLimitSettingsExpanded : state.homeActivitySettingsExpanded;
+      const expanded = state[HOME_MODULE_SUBGROUPS[id][0]];
       configure.className = `view-subgroup-toggle${expanded ? ' is-expanded' : ''}`;
-      configure.title = t(id === 'limits' ? 'settings.home.configureLimits' : 'settings.home.configureActivity');
-      configure.setAttribute('aria-label', configure.title);
+      configure.setAttribute('aria-label', t(id === 'limits' ? 'settings.home.configureLimits'
+        : id === 'trends' ? 'settings.home.configureActivity' : 'settings.home.configureModule', { name: label }));
       configure.setAttribute('aria-expanded', String(Boolean(expanded)));
       const toggleIcon = document.createElement('span');
       toggleIcon.className = 'view-subgroup-icon';
@@ -9942,8 +10785,7 @@ function renderHomeSettingsList() {
     const visibility = document.createElement('button');
     visibility.type = 'button';
     visibility.className = `tool-visibility-button${isHidden ? ' is-hidden' : ''}`;
-    visibility.title = t(isHidden ? 'settings.home.showModule' : 'settings.home.hideModule', { name: label });
-    visibility.setAttribute('aria-label', visibility.title);
+    visibility.setAttribute('aria-label', t(isHidden ? 'settings.home.showModule' : 'settings.home.hideModule', { name: label }));
     visibility.setAttribute('aria-pressed', String(!isHidden));
     visibility.append(visibilityIcon(isHidden));
     visibility.addEventListener('click', () => onHomeModuleVisibilityToggle(id));
@@ -9952,23 +10794,15 @@ function renderHomeSettingsList() {
     row.append(name, actions);
     row.addEventListener('pointerdown', (event) => homeModulePreferenceRowDrag.startRowDrag(event, id));
     wrap.append(row);
-    if (id === 'limits') {
+    const subgroup = HOME_MODULE_SUBGROUPS[id];
+    if (subgroup) {
       const listContainer = document.createElement('div');
-      listContainer.id = 'homeLimitProviderContainer';
-      listContainer.className = `accordion-animated-container${state.homeLimitSettingsExpanded ? '' : ' hidden'}`;
+      listContainer.id = subgroup[1];
+      listContainer.className = `accordion-animated-container${state[subgroup[0]] ? '' : ' hidden'}`;
       const inner = document.createElement('div');
       inner.className = 'accordion-animation-inner';
-      inner.appendChild(renderHomeLimitProviderList());
-      listContainer.appendChild(inner);
-      wrap.append(listContainer);
-    }
-    if (id === 'trends') {
-      const listContainer = document.createElement('div');
-      listContainer.id = 'homeActivitySettingsContainer';
-      listContainer.className = `accordion-animated-container${state.homeActivitySettingsExpanded ? '' : ' hidden'}`;
-      const inner = document.createElement('div');
-      inner.className = 'accordion-animation-inner';
-      inner.appendChild(renderHomeActivitySettings());
+      inner.appendChild(id === 'limits' ? renderHomeLimitProviderList()
+        : id === 'trends' ? renderHomeActivitySettings() : renderHomeModuleCountSettings(id));
       listContainer.appendChild(inner);
       wrap.append(listContainer);
     }
@@ -10036,6 +10870,35 @@ function renderHomeActivitySettings() {
   frag.append(daysRow);
 
   return frag;
+}
+
+function renderLimitsViewSettingsList() {
+  const wrap = document.createElement('div');
+  wrap.className = 'settings-nested-list';
+  const row = document.createElement('label');
+  row.className = 'settings-item';
+  const text = document.createElement('span');
+  text.className = 'settings-item-text';
+  const title = document.createElement('span');
+  title.className = 'settings-item-title';
+  title.textContent = t('limits.history.openMode');
+  text.appendChild(title);
+  const input = document.createElement('select');
+  input.id = 'limitsHistoryOpenModeInput';
+  for (const [value, key] of [['hover', 'openModeHover'], ['click', 'openModeClick'], ['off', 'openModeOff']]) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = t(`limits.history.${key}`);
+    input.appendChild(option);
+  }
+  input.value = state.settings?.limitsHistoryOpenMode || 'hover';
+  input.addEventListener('change', async () => {
+    await saveSettings({ limitsHistoryOpenMode: input.value });
+    renderLimits();
+  });
+  row.append(text, input);
+  wrap.appendChild(row);
+  return wrap;
 }
 
 function renderTrendSettingsList() {
@@ -10210,8 +11073,7 @@ function renderServiceProviderList() {
   reset.type = 'button';
   reset.className = 'tool-header-action';
   reset.textContent = '↺';
-  reset.title = t('settings.views.resetOrder');
-  reset.setAttribute('aria-label', reset.title);
+  reset.setAttribute('aria-label', t('settings.views.resetOrder'));
   reset.disabled = !hasCustomOrder;
   reset.addEventListener('click', () => void resetServiceProviderOrder());
   const showAll = document.createElement('button');
@@ -10221,8 +11083,7 @@ function renderServiceProviderList() {
   showAllEye.className = 'tool-header-eye';
   showAllEye.setAttribute('aria-hidden', 'true');
   showAll.append(showAllEye);
-  showAll.title = t('settings.views.showAll');
-  showAll.setAttribute('aria-label', showAll.title);
+  showAll.setAttribute('aria-label', t('settings.views.showAll'));
   showAll.disabled = hidden.size === 0;
   showAll.addEventListener('click', () => void showAllServiceProviders());
   headerActions.append(reset, showAll);
@@ -10259,8 +11120,7 @@ function renderServiceProviderList() {
     visibility.type = 'button';
     visibility.className = `tool-visibility-button${isHidden ? ' is-hidden' : ''}`;
     visibility.dataset.statusProvider = id;
-    visibility.title = t(isHidden ? 'serviceStatus.showProvider' : 'serviceStatus.hideProvider', { name: label });
-    visibility.setAttribute('aria-label', visibility.title);
+    visibility.setAttribute('aria-label', t(isHidden ? 'serviceStatus.showProvider' : 'serviceStatus.hideProvider', { name: label }));
     visibility.setAttribute('aria-pressed', String(!isHidden));
     visibility.append(visibilityIcon(isHidden));
     visibility.addEventListener('click', () => onServiceProviderVisibilityToggle(id));
@@ -10607,11 +11467,10 @@ function clientHealthGroup(group, notes, clientId) {
       const addSource = document.createElement('button');
       addSource.type = 'button';
       addSource.className = 'tool-health-source-control tool-health-source-add';
-      addSource.title = t('settings.tools.health.addCustomSource');
-      addSource.setAttribute('aria-label', addSource.title);
+      addSource.setAttribute('aria-label', t('settings.tools.health.addCustomSource'));
       addSource.append(customSourceIcon('add'));
       const label = document.createElement('span');
-      label.textContent = addSource.title;
+      label.textContent = addSource.getAttribute('aria-label');
       addSource.append(label);
       addSource.addEventListener('click', () => { void addCustomScanPath(clientId); });
       summaryRow.append(addSource);
@@ -10636,14 +11495,14 @@ function clientHealthGroup(group, notes, clientId) {
           const chip = document.createElement('code');
           chip.className = `tool-health-check${pathInfo.exists ? ' found' : pathInfo.pending ? ' pending' : ''}`;
           chip.textContent = pathInfo.dir ? friendlyPath(pathInfo.dir) : check.id;
-          if (pathInfo.dir) chip.title = pathInfo.dir;
+          if (pathInfo.dir) chip.setAttribute('aria-label', pathInfo.dir);
           row.append(chip);
           if (pathInfo.custom) {
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'tool-health-source-control tool-health-source-remove';
-            remove.title = t('settings.tools.health.removeCustomSource');
-            remove.setAttribute('aria-label', `${remove.title}: ${friendlyPath(pathInfo.dir)}`);
+            remove.setAttribute('aria-label', t('settings.tools.health.removeCustomSource'));
+            remove.setAttribute('aria-label', `${remove.getAttribute('aria-label')}: ${friendlyPath(pathInfo.dir)}`);
             remove.append(customSourceIcon('remove'));
             remove.addEventListener('click', () => { void removeCustomScanPath(clientId, pathInfo.dir); });
             row.append(remove);
@@ -11172,8 +12031,7 @@ function renderToolPreferencesNow() {
     visibility.id = `toolVisibility-${id}`;
     visibility.className = `tool-visibility-button${isHidden ? ' is-hidden' : ''}`;
     visibility.dataset.client = id;
-    visibility.title = t(isHidden ? 'settings.tools.showClient' : 'settings.tools.hideClient', { name: label });
-    visibility.setAttribute('aria-label', visibility.title);
+    visibility.setAttribute('aria-label', t(isHidden ? 'settings.tools.showClient' : 'settings.tools.hideClient', { name: label }));
     visibility.setAttribute('aria-pressed', String(!isHidden));
     visibility.append(visibilityIcon(isHidden));
     visibility.addEventListener('click', () => onClientVisibilityToggle(id));
@@ -11182,8 +12040,7 @@ function renderToolPreferencesNow() {
     pin.id = `toolPin-${id}`;
     pin.className = `tool-pin-button${isPinned ? ' is-pinned' : ''}`;
     pin.dataset.client = id;
-    pin.title = t(isPinned ? 'settings.tools.unpinClient' : 'settings.tools.pinClient', { name: label });
-    pin.setAttribute('aria-label', pin.title);
+    pin.setAttribute('aria-label', t(isPinned ? 'settings.tools.unpinClient' : 'settings.tools.pinClient', { name: label }));
     pin.setAttribute('aria-pressed', String(isPinned));
     pin.append(pinIcon());
     pin.addEventListener('click', () => onClientPinnedToggle(id));
@@ -11200,8 +12057,7 @@ function renderToolPreferencesNow() {
       main.type = 'button';
       main.id = `toolHealthDisclosure-${id}`;
       main.className = 'tool-preference-main';
-      main.title = t('settings.tools.health.open', { name: label });
-      main.setAttribute('aria-label', main.title);
+      main.setAttribute('aria-label', t('settings.tools.health.open', { name: label }));
       main.setAttribute('aria-expanded', String(expanded));
       const disclosureIcon = document.createElement('span');
       disclosureIcon.className = 'cursor-disclosure-icon';
@@ -11350,9 +12206,8 @@ function renderLimitProviderCheckboxesNow() {
       const statusTag = tagInfos.find((tagInfo) => tagInfo.kind === 'status');
       const dot = document.createElement('span');
       dot.className = 'limit-provider-status-dot';
-      dot.title = translatedLimitProviderTag(statusTag);
+      dot.setAttribute('aria-label', translatedLimitProviderTag(statusTag));
       dot.setAttribute('role', 'img');
-      dot.setAttribute('aria-label', dot.title);
       nameLine.append(dot);
     }
     for (const tagInfo of tagInfos) {
@@ -11397,8 +12252,7 @@ function renderLimitProviderCheckboxesNow() {
       main.type = 'button';
       main.id = `limitProviderDisclosure-${id}`;
       main.className = 'limit-provider-main';
-      main.title = t('settings.limits.providerOptions', { provider: settingsLabel || label });
-      main.setAttribute('aria-label', main.title);
+      main.setAttribute('aria-description', t('settings.limits.providerOptions', { provider: settingsLabel || label }));
       main.setAttribute('aria-expanded', String(expanded));
       disclosureIcon = document.createElement('span');
       disclosureIcon.className = 'cursor-disclosure-icon';
@@ -11505,6 +12359,11 @@ function moveOpenCodeLocalFallbackSetting() {
 // generated and hand-built panels share this, including which messages they
 // may override (`messages.required` / `rejected` / `invalidFormat`).
 let claudeOrganizationChoicesRevision = 0;
+let claudeWebAccountId = 'new';
+// null opens the initial empty-account form; an explicit cancel stays closed.
+let claudeWebFormOpen = null;
+const claudeAccountActions = accountShellApi.createBusyGuard();
+
 async function saveAccountCredential(id, values, { messages = {}, failedKey, clearInput = () => {} } = {}) {
   if (id === 'claude') claudeOrganizationChoicesRevision += 1;
   const provider = LIMIT_PROVIDERS.find((entry) => entry.id === id);
@@ -11513,12 +12372,15 @@ async function saveAccountCredential(id, values, { messages = {}, failedKey, cle
   renderExternalProviderStatus(id);
   let result;
   try {
-    result = await commitAccountCredential(() => window.tokenMonitor.limits.saveCredential(id, values));
+    result = await commitAccountCredential(() => id === 'claude' && values.claudeWebAccountId
+      ? claudeAccountActions.run('claude', null, () => window.tokenMonitor.claude.saveWebAccount(values))
+      : window.tokenMonitor.limits.saveCredential(id, values));
   } catch (error) {
     setAccountPanelMessage(id, { key: failedKey, params: { message: error.message } });
     renderExternalProviderStatus(id);
     return result;
   }
+  if (id === 'claude' && values.claudeWebAccountId && result === undefined) return result;
   if (result?.verdict === 'superseded') return result;
   if (id === 'claude') claudeOrganizationChoicesRevision += 1;
   if (id === 'claude' && result?.choices) renderClaudeOrganizationChoices(result.choices, result.settings?.claudeWebOrganizationId || values.claudeWebOrganizationId);
@@ -11528,6 +12390,11 @@ async function saveAccountCredential(id, values, { messages = {}, failedKey, cle
     return result;
   }
   if (!result?.saved) {
+    if (id === 'claude' && result?.errorCode === 'credentialStorageUnavailable') {
+      setAccountPanelMessage(id, { key: failedKey, params: { message: t('settings.common.error') } });
+      renderExternalProviderStatus(id);
+      return result;
+    }
     const rejection = {
       required: { key: messages.required || 'settings.common.credentialRequired' },
       invalidFormat: { key: messages.invalidFormat || 'settings.common.credentialInvalidFormat' }
@@ -11539,7 +12406,7 @@ async function saveAccountCredential(id, values, { messages = {}, failedKey, cle
   clearInput();
   // Marked only once the credential is stored: marking drops the provider's
   // current record, and a rejected key must leave the linked status on screen.
-  markExternalProviderCheckPending(id);
+  markExternalProviderCheckPending(id, result.checkedSince);
   if (result.verdict === 'indeterminate') {
     const throttled = result.status === 'rateLimited' || result.status === 'sourceRateLimited';
     setAccountPanelMessage(id, {
@@ -11550,7 +12417,7 @@ async function saveAccountCredential(id, values, { messages = {}, failedKey, cle
     });
   }
   renderExternalProviderStatus(id);
-  await refreshStats({ force: true });
+  await refreshStats();
   setExternalAccountExpanded(id, !externalProviderAccountLinked(id));
   renderExternalProviderStatus(id);
   return result;
@@ -11571,6 +12438,14 @@ async function submitAccountCredential(button, id, values, options) {
   }
 }
 
+async function refreshLimitProviderQuota(providerName) {
+  try {
+    await window.tokenMonitor.limits?.refresh?.(providerName);
+  } catch (_) {
+    // The next scheduled poll still settles the record.
+  }
+}
+
 async function clearAccountCredential(id) {
   if (id === 'claude') claudeOrganizationChoicesRevision += 1;
   setAccountPanelMessage(id, null);
@@ -11582,7 +12457,7 @@ async function clearAccountCredential(id) {
   clearExternalProviderCheckPending(id);
   clearExternalProviderPendingStatus(id);
   renderExternalProviderStatus(id);
-  await refreshStats({ force: true });
+  await refreshStats();
 }
 
 async function commitAccountCredential(request) {
@@ -11642,6 +12517,7 @@ async function loadClaudeOrganizationChoices() {
 // one, so switching drops it instead of leaving a key that can only fail.
 async function saveAccountFormSetting({ id }, field, value) {
   if (id === 'claude' && field.key === 'claudeWebOrganizationId') {
+    if (claudeWebAccountId !== 'legacy') return;
     if (!value || !state.settings?.claudeWebCookieConfigured || document.getElementById('claudeWebCookieInput')?.value) return;
     claudeOrganizationChoicesRevision += 1;
     await saveSettings({ claudeWebOrganizationId: value });
@@ -11673,11 +12549,22 @@ function setupLimitAccountPanels() {
         provider: externalProviderForAccount(form.id)
       })),
       onRefresh: async () => {
-        if (form.id === 'claude') await loadClaudeOrganizationChoices();
-        await refreshStats({ force: true });
+        if (form.id === 'claude' && claudeWebAccountId === 'legacy') await loadClaudeOrganizationChoices();
+        await refreshLimitProviderQuota(form.id);
+        await refreshStats();
       },
       onClear: ({ id }) => clearAccountCredential(id),
-      onSave: ({ id, messages, failedKey }, values, clearInput) => saveAccountCredential(id, values, { messages, failedKey, clearInput }),
+      onSave: async ({ id, messages, failedKey }, values, clearInput) => {
+        if (id === 'claude' && claudeWebAccountId !== 'legacy') values.claudeWebAccountId = claudeWebAccountId;
+        const result = await saveAccountCredential(id, values, { messages, failedKey, clearInput });
+        if (id === 'claude' && result?.saved) {
+          claudeWebFormOpen = false;
+          claudeWebAccountId = 'new';
+          renderClaudeOrganizationChoices([]);
+          renderExternalProviderStatus(id);
+        }
+        return result;
+      },
       onFieldChange: (form, field, value) => saveAccountFormSetting(form, field, value),
       onFieldError: ({ id, failedKey }, error) => {
         setAccountPanelMessage(id, { key: failedKey, params: { message: error.message } });
@@ -11692,7 +12579,6 @@ function setupLimitAccountPanels() {
     added = true;
     setExternalAccountExpanded(form.id, false);
     limitAccountPanelsApi.syncCredentialFields(form, { document, settings: state.settings });
-    if (form.id === 'claude' && state.settings?.claudeWebCookieConfigured) void loadClaudeOrganizationChoices();
     renderExternalProviderStatus(form.id);
   }
   if (added) initSettingsAnimationWrappers();
@@ -11750,6 +12636,11 @@ const LIMIT_PROVIDER_SETTINGS = {
     titleKey: 'settings.limits.prepaidBalance',
     descKey: 'settings.limits.prepaidBalanceDesc',
     requiresConfiguredKey: 'claudeWebCookieConfigured',
+    defaultValue: true
+  }, {
+    key: 'claudeCliFallbackEnabled',
+    titleKey: 'settings.limits.claudeCliFallback',
+    descKey: 'settings.limits.claudeCliFallbackDesc',
     defaultValue: true
   }],
   codex: [{
@@ -11908,8 +12799,7 @@ function limitProviderUsageItemsList(providerId, items, reusableInputs = null) {
     restore.type = 'button';
     restore.className = 'reset-appearance-button reset-inline';
     restore.textContent = '↺';
-    restore.title = t('settings.limits.usageItemsRestore');
-    restore.setAttribute('aria-label', restore.title);
+    restore.setAttribute('aria-label', t('settings.limits.usageItemsRestore'));
     restore.addEventListener('click', () => commitLimitProviderHiddenItems(
       limitUsageItemsApi.restoreUsageItemDefaults(state.settings?.limitProviderHiddenItems, providerId)
     ));
@@ -11933,7 +12823,7 @@ function limitProviderUsageItemsList(providerId, items, reusableInputs = null) {
     }
     const text = document.createElement('span');
     text.textContent = entry.available ? entry.label : t('settings.limits.usageItemUnavailable', { item: entry.label });
-    item.title = text.textContent;
+    item.setAttribute('aria-label', text.textContent);
     item.append(input, text);
     list.append(item);
   }
@@ -12110,21 +13000,24 @@ async function onHomeModuleVisibilityToggle(moduleId) {
 }
 
 async function onHomeModuleMove(moduleId, direction) {
-  const next = homeModulePreferencesApi.moveHomeModuleOrder(state.settings?.homeModuleOrder, HOME_MODULE_OPTIONS, moduleId, direction);
+  const next = homeModulePreferencesApi.moveHomeModuleOrder(state.settings?.homeModuleOrder, homeModuleOptions(), moduleId, direction);
   await saveSettings({ homeModuleOrder: next });
   renderHomeIfVisible();
 }
 
 async function onHomeModuleReorder(moduleId, targetIndex) {
-  const current = homeModulePreferencesApi.normalizeHomeModuleOrder(state.settings?.homeModuleOrder, HOME_MODULE_OPTIONS).join(',');
-  const next = homeModulePreferencesApi.reorderHomeModuleOrder(state.settings?.homeModuleOrder, HOME_MODULE_OPTIONS, moduleId, targetIndex);
+  const current = homeModulePreferencesApi.normalizeHomeModuleOrder(state.settings?.homeModuleOrder, homeModuleOptions()).join(',');
+  const next = homeModulePreferencesApi.reorderHomeModuleOrder(state.settings?.homeModuleOrder, homeModuleOptions(), moduleId, targetIndex);
   if (next === current) return;
   await saveSettings({ homeModuleOrder: next });
   renderHomeIfVisible();
 }
 
 async function resetHomeModuleOrder() {
-  await saveSettings({ homeModuleOrder: homeModulePreferencesApi.DEFAULT_HOME_MODULE_ORDER });
+  // Resetting the built-in order keeps placed plugin views, after the built-ins.
+  const pluginModules = homeModulePreferencesApi.normalizeHomeModuleOrder(state.settings?.homeModuleOrder, HOME_MODULE_OPTIONS)
+    .filter((id) => homeModulePreferencesApi.isPluginModuleId(id));
+  await saveSettings({ homeModuleOrder: [homeModulePreferencesApi.DEFAULT_HOME_MODULE_ORDER, ...pluginModules].join(',') });
   renderHomeIfVisible();
 }
 
@@ -12362,6 +13255,228 @@ window.addEventListener('blur', () => {
   if (state.viewSwitcherOpen) setViewSwitcherOpen(false);
 });
 
+function renderNotchPageChoices() {
+  window.TokenMonitorNotchPageSettings?.render({ document, container: document.getElementById('notchPageChoices'),
+    settings: state.settings, catalog: state.pluginCatalog, t,
+    resetButton: document.getElementById('resetNotchPageOrderButton'),
+    save: async patch => { await saveSettings(patch); },
+    place: async (ref, placed) => { await pluginApi.place(ref, 'notch', placed); },
+    pluginIcon: (name, identityIcon) => window.TokenMonitorPluginViews?.navigationIcon(document, { icon: name, identityIcon }, 14),
+    createRowDrag: config => rowDragControllerApi.createRowDragController({
+      dragSort: verticalDragSortApi, getScrollPanel: () => els.settingsPanel,
+      preserveScroll: preserveSettingsPanelScroll, ...config
+    }),
+    formatError: error => window.TokenMonitorPluginSettings.actionErrorMessage(error, t)
+  });
+}
+
+// ---- Plugins -------------------------------------------------------------
+// The catalog (from main) decides which plugin views exist; the view host
+// paints resolved views into Home and reports what is visible, so main only
+// samples sources something on screen, or a background rule, needs.
+const pluginBridge = window.tokenMonitor.plugins || null;
+pluginViewHost = pluginViewsApi && pluginBridge ? pluginViewsApi.createPluginViewHost({
+  document,
+  window,
+  t,
+  services: {
+    app: window.tokenMonitor,
+    native: {
+      quota: limitWindowsView,
+      usageRow: data => { const node = rowTemplate(data); updateRow(node, { ...data, barValue: data.barValue ?? data.value, max: data.max ?? data.value, color: data.color || 'var(--accent)' }); return node; },
+      updateUsageRow: updateRow,
+      quotaProvider: (id, label, record, color) => renderLimitProviderSolo(id, label, record, color),
+      quotaGroup: (id, label, records, color) => renderLimitProviderGroup(id, label, records, color)
+    },
+    navigate: openViewFromTray
+  },
+  getContext: () => ({ period: state.period, source: state.settings?.hubMode, stats: state.stats }),
+  onLoaded: () => { void maybeUpdateBarsIcon(); renderFloatingBubbleContent(); },
+  onDemand: (surface, refs) => pluginBridge.setDemand(surface, refs),
+  motionAllowed: () => !prefersReducedMotion(),
+  motionMode: () => tokenNumberAnimationApi.normalize(state.settings?.tokenNumberAnimation),
+  isSurfaceActive: (surface, container) => !isRendererWindowHidden() && !state.floatingBubble.collapsed
+    && (surface === 'settings' ? isSettingsPanelOpen() : !isSettingsPanelOpen()
+      || (surface === 'page' && Boolean(container?.closest('#pluginMainPanel'))))
+}) : null;
+pluginContent = pluginViewHost ? window.TokenMonitorPluginContent.create({ document,
+  host: { mount: (container, view, context) => pluginViewHost.mount(container, view.ref, 'page', context), unmount: container => pluginViewHost.unmount(container) },
+  getViews: () => (state.pluginCatalog?.plugins || []).filter(plugin => plugin.status === 'active').flatMap(plugin => plugin.views || []),
+  selection: target => state.pluginCatalog?.contentSelections?.[target]
+}) : null;
+pluginMainPages = pluginViewHost ? window.TokenMonitorPluginMainPages.create({
+  document, container: document.getElementById('pluginMainPanel'), headingContainer: document.getElementById('pluginPageHeading'), actionsContainer: document.getElementById('pluginPageActions'), host: pluginViewHost, t,
+  openWindow: ref => pluginBridge.openPage(ref),
+  formatError: error => window.TokenMonitorPluginSettings.actionErrorMessage(error, t)
+}) : null;
+if (pluginViewHost) new MutationObserver(() => pluginViewHost.refreshDemand()).observe(els.shell, { attributes: true, attributeFilter: ['class'] });
+let pluginCatalogKey = '';
+
+function applyPluginCatalog(list) {
+  if (!list) return list;
+  state.pluginCatalog = list;
+  // Home and the theme chips depend only on which plugins and views are
+  // active; process metrics refresh every few seconds and must not re-render.
+  const key = JSON.stringify([list.contentSelections, list.contentOrder, (list.plugins || []).map((plugin) => [plugin.id, plugin.name, plugin.status, plugin.revision,
+    (plugin.views || []).map((view) => [view.ref, view.title, view.surfaces, view.placements?.page, view.placements?.notch]), plugin.skins, plugin.revision])]);
+  if (key !== pluginCatalogKey) {
+    pluginCatalogKey = key;
+    render();
+    renderViewSwitcher();
+    renderThemePresetChips();
+    renderNotchPageChoices();
+    if (isSettingsSurfaceVisible()) preserveSettingsPanelScroll(renderViewPreferences);
+  }
+  return list;
+}
+
+async function loadPluginCatalog() {
+  try {
+    const list = applyPluginCatalog(await pluginBridge.list());
+    try { applyPluginCatalogUpdates(await pluginBridge.catalog()); } catch (_) {}
+    return list;
+  }
+  catch (error) {
+    // Initial failure must resolve the pending restored page. Later transient
+    // failures retain the last known catalog until a successful refresh.
+    if (!state.pluginCatalog) applyPluginCatalog({ enabled: false, plugins: [] });
+    throw error;
+  }
+}
+
+function applyPluginCatalogUpdates(catalog) {
+  pluginUpdateCount = catalog.entries.filter(entry => entry.status === 'update').length;
+  renderSettingsSummaries();
+  return catalog;
+}
+
+pluginApi = pluginBridge ? {
+  list: loadPluginCatalog,
+  orderContent: async (target, refs) => applyPluginCatalog(await window.tokenMonitorTrustedPlugins.orderContent(target, refs)),
+  selectContent: async (target, ref) => applyPluginCatalog(await window.tokenMonitorTrustedPlugins.selectContent(target, ref)),
+  setEnabled: async (id, enabled, initialSetup) => applyPluginCatalog(await pluginBridge.setEnabled(id, enabled, initialSetup)),
+  setBackground: async (id, enabled) => applyPluginCatalog(await pluginBridge.setBackground(id, enabled)),
+  restart: async (id) => applyPluginCatalog(await pluginBridge.restart(id)),
+  reload: async () => applyPluginCatalog(await pluginBridge.reload()),
+  place: async (ref, surface, placed) => applyPluginCatalog(await pluginBridge.place(ref, surface, placed)),
+  openPage: async ref => {
+    const page = pluginPageOptions().find(page => page.ref === ref);
+    if (!page) throw new Error(t('plugins.page.enableFirst'));
+    openViewFromTray(page.id);
+    document.querySelector('#pluginPageHeading .plugin-main-heading:not(.hidden) h2')?.focus({ preventScroll: true });
+  },
+  getSettings: id => pluginBridge.getSettings(id),
+  updateSettings: (id, input) => pluginBridge.updateSettings(id, input),
+  catalog: async () => applyPluginCatalogUpdates(await pluginBridge.catalog()),
+  discoverCatalog: async force => applyPluginCatalogUpdates(await pluginBridge.discoverCatalog(force)),
+  catalogDetails: (source, id) => pluginBridge.catalogDetails(source, id),
+  closeCatalogDetails: () => pluginBridge.closeCatalogDetails(),
+  catalogReadmeImage: (documentId, index) => pluginBridge.catalogReadmeImage(documentId, index),
+  catalogPreview: (source, id, version) => pluginBridge.catalogPreview(source, id, version),
+  addSource: async input => applyPluginCatalogUpdates(await pluginBridge.addSource(input)),
+  refreshSource: async id => applyPluginCatalogUpdates(await pluginBridge.refreshSource(id)),
+  removeSource: async id => applyPluginCatalogUpdates(await pluginBridge.removeSource(id)),
+  importPackage: kind => pluginBridge.importPackage(kind),
+  install: async (token, options) => applyPluginCatalog(await pluginBridge.install(token, options)),
+  cancelInstall: token => pluginBridge.cancelInstall(token),
+  rollback: async id => applyPluginCatalog(await pluginBridge.rollback(id)),
+  uninstall: async (id, options) => applyPluginCatalog(await pluginBridge.uninstall(id, options)),
+  openFolder: () => pluginBridge.openFolder()
+} : null;
+
+pluginSettingsPanel = pluginApi && window.TokenMonitorPluginSettings
+  ? window.TokenMonitorPluginSettings.createPluginSettingsPanel({
+    mountSettings: (container, view) => pluginViewHost.mount(container, view.ref, 'settings', { descriptor: view }),
+    unmountSettings: container => pluginViewHost.unmount(container),
+    document,
+    container: document.getElementById('pluginSettingsList'),
+    t,
+    api: pluginApi,
+    getLocale: currentLocale,
+    onOpenExternal: (url) => window.tokenMonitor.openExternal(url),
+    onCopyText: (text) => window.tokenMonitor.copyText(text),
+    setDetailTooltip: limitWindowsView.setDetailTooltip,
+    onApplySkin: (skin) => applyPluginSkin(skin),
+    onPlaced: () => renderSettingsSummaries(),
+    getEnabled: () => state.settings.pluginsEnabled !== false,
+    onSetEnabled: async (enabled) => {
+      await saveSettings({ pluginsEnabled: enabled });
+      renderSettingsSummaries();
+      return pluginApi.list();
+    }
+  }) : null;
+
+async function refreshPluginCatalog() {
+  if (!pluginApi) return;
+  if (state.settingsSections?.plugins && pluginSettingsPanel && !pluginSettingsPanel.isInteracting()) {
+    await pluginSettingsPanel.refresh();
+    renderSettingsSummaries();
+    return;
+  }
+  try { await pluginApi.list(); } catch (_) {}
+}
+
+// The tray bitmap has no DOM to observe, so its demand is the plugin items in
+// the custom layout whenever that layout is the one being drawn.
+function syncPluginTrayDemand() {
+  if (!pluginViewHost) return;
+  const refs = state.settings?.showTrayIcon !== false && state.settings?.trayContent === 'custom'
+    ? trayLayoutApi.trayLayoutPluginRefs(state.settings?.trayCustomLayout) : [];
+  if (!isRendererWindowHidden() && state.floatingBubble.collapsed && state.settings?.floatingBubbleContent === 'custom') {
+    refs.push(...trayLayoutApi.trayLayoutPluginRefs(state.settings.floatingBubbleCustomLayout));
+  }
+  pluginViewHost.setExplicitDemand('tray', [...new Set(refs)]);
+}
+
+function pluginTrayViews(layout) {
+  const views = {};
+  for (const ref of trayLayoutApi.trayLayoutPluginRefs(layout)) {
+    views[ref] = pluginViewHost?.state('tray', ref) || null;
+  }
+  return views;
+}
+
+async function applyPluginSkin(skin) {
+  // Main resolves the active author manifest and commits palette + tokens
+  // together. Never send the renderer's copy of the skin as trusted settings.
+  await saveSettings({ pluginSkinRef: skin.ref });
+  buildAppearanceColorControls();
+  renderSettingsSummaries();
+}
+
+async function applyAppearancePluginSkin(skin, chip) {
+  const container = els.themePresetChips;
+  if (container.getAttribute('aria-busy') === 'true') return;
+  container.querySelector('.plugin-action-error')?.remove();
+  for (const control of container.querySelectorAll('button')) control.removeAttribute('aria-describedby');
+  const skinKey = JSON.stringify(skin), settingsRevision = state.settingsPushRevision;
+  const restoreFocus = document.activeElement === chip;
+  container.setAttribute('aria-busy', 'true');
+  try { await applyPluginSkin(skin); }
+  catch (error) {
+    // saveSettings refreshes the form before rethrowing. Reattach to the same
+    // skin after that refresh, but discard failures from superseded settings.
+    if (state.settingsPushRevision !== settingsRevision) return;
+    const target = container.contains(chip) ? chip
+      : [...container.querySelectorAll('button')].find(control => control.dataset.pluginSkin === skinKey);
+    if (!target) return;
+    const notice = document.createElement('p'); notice.className = 'plugin-action-error';
+    notice.id = 'theme-plugin-skin-error';
+    notice.setAttribute('role', 'alert'); notice.setAttribute('aria-atomic', 'true');
+    notice.textContent = window.TokenMonitorPluginSettings.actionErrorMessage(error, t);
+    target.setAttribute('aria-describedby', notice.id); container.append(notice);
+    if (restoreFocus && (document.activeElement === document.body || document.activeElement === chip)) target.focus({ preventScroll: true });
+  } finally { container.setAttribute('aria-busy', 'false'); }
+}
+
+if (pluginBridge) {
+  pluginBridge.onViews((payload) => {
+    pluginViewHost?.update(payload);
+    if (payload?.surface === 'tray') { void maybeUpdateBarsIcon(); renderFloatingBubbleContent(); }
+  });
+  pluginBridge.onChanged(() => void refreshPluginCatalog());
+}
+
 async function init() {
   // Subscribe before querying: a native appearance/accessibility change can
   // arrive while the initial state round trip is in flight.
@@ -12397,13 +13512,23 @@ async function init() {
     void maybeUpdateBarsIcon();
     void deliverTrayProviderIcons();
   };
+  let notchCapabilitiesSeeded = false;
+  window.tokenMonitor.onNotchCapabilitiesPush?.((value) => {
+    notchCapabilitiesSeeded = true;
+    state.notchCapabilities = value;
+    syncNotchCapabilities();
+  });
   window.tokenMonitor.onSystemUiThemePush?.((payload) => applySystemUiTheme(payload?.dark === true));
   try { state.appInfo = await window.tokenMonitor.getAppInfo?.(); } catch (_) {}
+  if (!notchCapabilitiesSeeded) state.notchCapabilities = state.appInfo?.notchCapabilities || null;
+  syncNotchCapabilities();
   // Seeding assigns directly: the rest of init delivers both icon sets anyway,
   // and settings have not loaded yet, so repainting from here would only churn.
   if (!systemUiThemeSeeded) state.systemDarkUi = state.appInfo?.systemDarkUi === true;
   if (els.aboutVersion) els.aboutVersion.textContent = state.appInfo?.version ? `v${state.appInfo.version}` : '—';
   state.settings = await window.tokenMonitor.getSettings();
+  try { await pluginApi?.list(); } catch (_) {}
+  syncPluginTrayDemand();
   syncContentForm?.syncSettings();
   await syncContentForm?.refresh(false);
   applyEffectiveCurrencyRates();
@@ -12563,7 +13688,7 @@ els.breakdown.addEventListener('click', (event) => {
   }
   const key = rowEl.dataset.key || '';            // "session:<client>:<sessionId>"
   const client = rowEl.dataset.client || '';
-  if (client !== 'claude' && client !== 'codex' && client !== 'opencode' && client !== 'reasonix' && client !== 'dsh' && client !== 'codebuddy' && client !== 'workbuddy' && client !== 'pi') return;
+  if (client !== 'claude' && client !== 'codex' && client !== 'opencode' && client !== 'reasonix' && client !== 'dsh' && client !== 'codebuddy' && client !== 'workbuddy' && client !== 'pi' && client !== 'omp' && client !== 'senpi') return;
   if (client === 'reasonix' && rowEl.dataset.detailUnavailable === 'true') return;
   const match = key.match(/^session:([^:]+):(.+)$/);
   if (!match) return;
@@ -12591,6 +13716,7 @@ els.pinButton.addEventListener('click', (event) => {
   if (event.detail > 0) els.pinButton.blur();
   saveSettings({ windowBehavior: nextWindowBehavior(currentWindowBehavior()) });
 });
+initFooterActionDisclosure();
 els.settingsButton.addEventListener('click', (event) => {
   if (state.viewSwitcherOpen) setViewSwitcherOpen(false);
   els.settingsPanel.classList.toggle('hidden');
@@ -12835,6 +13961,13 @@ for (const [field, inputId] of HUB_DRAFT_FIELDS) {
 els.syncUploadIntervalInput?.addEventListener('change', async () => {
   await saveSettings({ syncUploadIntervalMs: Number(els.syncUploadIntervalInput.value) });
 });
+els.deviceIconInput?.addEventListener('change', async event => {
+  const select = event.currentTarget;
+  select.disabled = true;
+  deviceIconsApi.syncDeviceIconSelect(select);
+  try { await saveDeviceIcon(state.settings.deviceId, select.value, select.dataset.detectedKind); }
+  finally { select.disabled = false; syncHubDraftFields(); }
+});
 els.collectionCadenceInput?.addEventListener('change', async () => {
   const value = els.collectionCadenceInput.value;
   await saveSettings({
@@ -12931,6 +14064,16 @@ els.resetGlassButton.addEventListener('click', async () => {
   applyAppearanceFromControls();
   await saveSettings({ glassOpacity: defaultAppearance.glassOpacity });
 });
+for (const [key, mode] of nativeGlassTintSettings) {
+  els[`${key}Input`]?.addEventListener('input', applyAppearanceFromControls);
+  els[`${key}Input`]?.addEventListener('change', saveAppearanceFromControls);
+  els[`${key}Reset`]?.addEventListener('click', async () => {
+    const value = macBackdropApi.normalizeLiquidGlassTint(undefined, mode);
+    els[`${key}Input`].value = String(value);
+    applyAppearanceFromControls();
+    await saveSettings({ [key]: value });
+  });
+}
 els.resetDepthButton.addEventListener('click', async () => {
   els.blurInput.value = String(defaultAppearance.glassBlur);
   applyAppearanceFromControls();
@@ -12948,7 +14091,7 @@ els.zoomInput.addEventListener('input', applyAppearanceFromControls);
 els.chooseBackgroundImageButton?.addEventListener('click', () => { void changeBackgroundImage(); });
 els.clearBackgroundImageButton?.addEventListener('click', () => { void changeBackgroundImage(true); });
 void loadBackgroundImage();
-els.resetThemeColorsButton?.addEventListener('click', () => commitThemeColors({}));
+els.resetThemeColorsButton?.addEventListener('click', () => commitThemeColors({}, true));
 els.resetVendorColorsButton?.addEventListener('click', () => commitVendorColors({}));
 els.textSizeInput?.addEventListener('change', async () => {
   await saveSettings({ textSize: fontSettingsApi.normalizeTextSize(els.textSizeInput.value) });
@@ -12991,6 +14134,7 @@ setupSettingsAccordion(els.advancedSettingsGroup, els.advancedSettingsToggle, el
 setupSettingsAccordion(els.themeAdvancedGroup, els.themeAdvancedToggle, els.themeAdvancedDetails);
 setupSettingsAccordion(els.themeVendorGroup, els.themeVendorToggle, els.themeVendorDetails);
 setupSettingsAccordion(els.edgeDockMoreOptionsGroup, els.edgeDockMoreOptionsToggle, els.edgeDockMoreOptionsDetails);
+setupSettingsAccordion(els.notchMoreOptionsGroup, els.notchMoreOptionsToggle, els.notchMoreOptionsDetails);
 for (const input of els.systemGlassInputs || []) {
   input.addEventListener('change', () => {
     if (input.checked) saveAppearanceFromControls();
@@ -13002,10 +14146,16 @@ for (const input of els.reduceMotionInputs || []) {
   input.addEventListener('change', async () => {
     if (!input.checked) return;
     state.settings.reduceMotion = applyReduceMotionPreference(input.value);
+    pluginViewHost?.refreshMotion();
     await saveAppearanceFromControls();
   });
 }
 els.liveDotInput.addEventListener('change', saveAppearanceFromControls);
+els.sessionToolFilterItems.addEventListener('scroll', updateSessionToolScrollButtons, { passive: true });
+els.sessionToolPrevious.addEventListener('click', () => scrollSessionTools(-1));
+els.sessionToolNext.addEventListener('click', () => scrollSessionTools(1));
+new ResizeObserver(updateSessionToolScrollButtons).observe(els.sessionToolFilterItems);
+
 els.toolIconsInput.addEventListener('change', async () => {
   state.settings.showToolIcons = els.toolIconsInput.checked;
   renderHomeIfVisible();
@@ -13062,7 +14212,69 @@ function edgeDockAvailable() {
   return platform === 'darwin' || platform === 'win32';
 }
 
-function syncEdgeDockControls() {
+function syncDockSizeControls(surface) {
+  const sizes = (els[`${surface}SizeInputs`] || []).map((input) => input.value);
+  const size = sizes.includes(state.settings?.[`${surface}Size`]) ? state.settings[`${surface}Size`] : 'medium';
+  for (const input of els[`${surface}SizeInputs`] || []) input.checked = input.value === size;
+  els[`${surface}CustomScaleRow`]?.classList.toggle('hidden', size !== 'custom');
+  if (els[`${surface}CustomScaleInput`] && document.activeElement !== els[`${surface}CustomScaleInput`]) {
+    els[`${surface}CustomScaleInput`].value = String(Math.round((Number(state.settings?.[`${surface}CustomScale`]) || 1) * 100));
+    syncSliderRow(els[`${surface}CustomScaleInput`]);
+  }
+}
+
+// Liquid Glass is offered on the same terms as the widget's own selector. A
+// saved choice the system cannot draw shows as the Frosted Glass it falls back to.
+// Appearance previews carry only the controls they own, so the notch style is
+// read from the saved settings underneath them.
+const NOTCH_HOVER_DELAY_DEFAULT_MS = 0;
+
+// Hover duration applies only to hover-to-open.
+function syncNotchHoverControls() {
+  const action = state.settings?.notchHoverAction === 'open' ? 'open' : 'peek';
+  for (const input of els.notchHoverActionInputs) input.checked = input.value === action;
+  els.notchHoverDelayRow?.classList.toggle('hidden', action !== 'open');
+  if (els.notchHoverDelayInput && document.activeElement !== els.notchHoverDelayInput) {
+    const delay = Number(state.settings?.notchHoverDelay);
+    els.notchHoverDelayInput.value = String(Number.isFinite(delay) ? delay : NOTCH_HOVER_DELAY_DEFAULT_MS);
+  }
+  syncNotchHoverDelayValue();
+}
+
+function syncNotchHoverDelayValue() {
+  const value = els.notchHoverDelayRow?.querySelector('.slider-value');
+  if (value && els.notchHoverDelayInput) value.textContent = `${(Number(els.notchHoverDelayInput.value) / 1000).toFixed(1)} s`;
+}
+
+function syncNotchStyleInput(preview) {
+  if (!els.notchStyleInput) return;
+  const settings = Object.assign({}, state.settings, ...pendingSettingsPatches, preview);
+  syncMacStyleSelect(els.notchStyleInput, settings?.notchStyle || 'inherit', nativeMaterialState.liquidGlassSupported === true);
+}
+
+// Liquid Glass options hide where it cannot be drawn, and a saved Liquid Glass
+// choice shows the Frosted Glass the surface falls back to.
+function syncMacStyleSelect(select, style, liquidGlassAvailable) {
+  for (const value of ['liquid-glass', 'liquid-glass-clear']) {
+    const option = select.querySelector(`option[value="${value}"]`);
+    if (option) option.hidden = option.disabled = !liquidGlassAvailable;
+  }
+  select.value = macBackdropApi.isLiquidGlassBackdrop(style) && !liquidGlassAvailable ? 'vibrancy' : style;
+}
+
+function syncEdgeDockMacBackdropInput(preview) {
+  if (!els.edgeDockMacBackdropInput) return;
+  const settings = Object.assign({}, state.settings, ...pendingSettingsPatches, preview);
+  syncMacStyleSelect(els.edgeDockMacBackdropInput,
+    macBackdropApi.normalizeEdgeDockBackdropMode(settings?.edgeDockMacBackdrop),
+    nativeMaterialState.liquidGlassSupported === true);
+}
+
+function syncNotchCapabilities() {
+  els.notchRunningIndicatorRow?.classList.toggle('hidden', state.notchCapabilities?.rings === false);
+}
+
+function syncDockControls() {
   if (!els.edgeDockInput) return;
   const available = edgeDockAvailable();
   els.edgeDockFeature?.classList.toggle('hidden', !available);
@@ -13070,71 +14282,161 @@ function syncEdgeDockControls() {
   els.edgeDockInput.checked = enabled;
   els.edgeDockOptions?.classList.toggle('hidden', !enabled);
   const side = state.settings?.edgeDockSide === 'left' ? 'left' : 'right';
-  for (const input of els.edgeDockSideInputs || []) input.checked = input.value === side;
+  const floating = Number.isFinite(state.settings?.edgeDockFloatingX);
+  for (const input of els.edgeDockSideInputs || []) input.checked = !floating && input.value === side;
   const modes = (els.edgeDockModeInputs || []).map((input) => input.value);
   const mode = modes.includes(state.settings?.edgeDockMode) ? state.settings.edgeDockMode : 'autoHide';
   for (const input of els.edgeDockModeInputs || []) input.checked = input.value === mode;
-  const sizes = (els.edgeDockSizeInputs || []).map((input) => input.value);
-  const size = sizes.includes(state.settings?.edgeDockSize) ? state.settings.edgeDockSize : 'medium';
-  for (const input of els.edgeDockSizeInputs || []) input.checked = input.value === size;
-  els.edgeDockCustomScaleRow?.classList.toggle('hidden', size !== 'custom');
-  if (els.edgeDockCustomScaleInput && document.activeElement !== els.edgeDockCustomScaleInput) {
-    els.edgeDockCustomScaleInput.value = String(Math.round((Number(state.settings?.edgeDockCustomScale) || 1) * 100));
-    syncSliderRow(els.edgeDockCustomScaleInput);
-  }
+  syncDockSizeControls('edgeDock');
+  syncDockSizeControls('notch');
   els.edgeDockHapticRow?.classList.toggle('hidden', state.appInfo?.platform !== 'darwin');
   if (els.edgeDockHapticInput) els.edgeDockHapticInput.checked = state.settings?.edgeDockHaptic !== false;
   if (els.edgeDockWarnColorsInput) els.edgeDockWarnColorsInput.checked = state.settings?.edgeDockWarnColors === true;
   if (els.edgeDockRunningIndicatorInput) els.edgeDockRunningIndicatorInput.checked = state.settings?.edgeDockRunningIndicatorEnabled !== false;
-  if (els.edgeDockMacBackdropInput) {
-    els.edgeDockMacBackdropInput.value = macBackdropApi.normalizeEdgeDockBackdropMode(state.settings?.edgeDockMacBackdrop);
+  syncEdgeDockMacBackdropInput();
+  if (els.edgeDockWindowsBackdropInput) {
+    els.edgeDockWindowsBackdropInput.value = windowsBackdropApi.normalizeWindowsDockBackdropMode(state.settings?.edgeDockWindowsBackdrop);
   }
-  if (enabled) edgeDockComposer?.render();
+  const notchAvailable = state.appInfo?.platform === 'darwin';
+  const notchEnabled = notchAvailable && state.settings?.notchEnabled === true;
+  els.notchFeature?.classList.toggle('hidden', !notchAvailable);
+  if (els.notchInput) els.notchInput.checked = notchEnabled;
+  els.notchOptions?.classList.toggle('hidden', !notchEnabled);
+  renderNotchPageChoices();
+  syncNotchStyleInput();
+  for (const input of els.notchShapeInputs) input.checked = input.value === (state.settings?.notchShape || 'auto');
+  syncNotchSummaryMode();
+  if (els.notchSummaryInput) els.notchSummaryInput.checked = state.settings?.notchSummaryEnabled !== false;
+  if (els.notchWarnColorsInput) els.notchWarnColorsInput.checked = state.settings?.notchWarnColors === true;
+  if (els.notchRunningIndicatorInput) els.notchRunningIndicatorInput.checked = state.settings?.notchRunningIndicatorEnabled === true;
+  syncNotchCapabilities();
+  if (els.notchProgressiveBlurInput) els.notchProgressiveBlurInput.checked = state.settings?.notchProgressiveBlur !== false;
+  if (els.notchHapticInput) els.notchHapticInput.checked = state.settings?.notchHaptic !== false;
+  if (els.notchSwipeGesturesInput) els.notchSwipeGesturesInput.checked = state.settings?.notchSwipeGestures !== false;
+  syncNotchHoverControls();
+  if (els.notchHideSummaryInFullScreenInput) els.notchHideSummaryInFullScreenInput.checked = state.settings?.notchHideSummaryInFullScreen !== false;
+  els.edgeDockComposerRow?.classList.toggle('hidden', !enabled);
+  if (available) edgeDockComposer?.render();
+  if (notchAvailable) notchItemsComposer?.render();
 }
 
-const edgeDockComposer = els.edgeDockComposer && window.TokenMonitorEdgeDockComposer
-  ? window.TokenMonitorEdgeDockComposer.createEdgeDockComposer({
-    root: els.edgeDockComposer,
-    t,
-    itemsApi: window.TokenMonitorEdgeDockItems,
-    presentationApi: window.TokenMonitorEdgeDockPresentation,
-    getSettings: () => state.settings,
-    getStats: () => state.stats,
-    save: (patch) => saveSettings(patch),
-    providerLabel: (id) => window.TokenMonitorLimitProviders.LIMIT_PROVIDER_LABELS[id] || id,
-    providerColor: (id) => limitProviderColor(id),
-    windowLabel: (record, quotaWindow) => record?.provider === 'codex' && quotaWindow.additional === true
-      ? limitWindowsView.codexAdditionalWindowLabel(
-        quotaWindow,
-        (record.windows || []).filter((entry) => entry?.additional === true)
-      )
-      : limitWindowsView.providerWindowLabel(record, quotaWindow, 'Quota'),
-    hasProviderMark: (id) => limitMarksWithIcon.has(id),
-    // Offer every enabled provider in the user's limits order, including those
-    // without quota data. Keep the ordering rule here rather than in the composer.
-    enabledLimitProviders: () => limitProviderOrderApi
-      .orderedLimitProviders(LIMIT_PROVIDERS, state.settings?.limitProviderOrder)
-      .filter(({ id }) => enabledLimitProviderSet().has(id))
-      .map(({ id }) => id),
-    isWindowHidden: (providerId, quotaWindow) => limitUsageItemsApi.isLimitWindowHidden(
-      state.settings?.limitProviderHiddenItems, providerId, quotaWindow
-    ),
-    maskEmail: (email) => (state.settings?.maskLimitAccountEmails === true
-      ? accountIdentityApi.maskEmailAddress(email)
-      : String(email || '')),
-    mimoProductLabel,
-    createRowDrag: (config) => rowDragControllerApi.createRowDragController({
-      dragSort: verticalDragSortApi,
-      getScrollPanel: () => els.settingsPanel,
-      preserveScroll: preserveSettingsPanelScroll,
-      ...config
+function syncNotchSummaryMode() {
+  const mode = state.settings?.notchSummaryMode || 'sessions';
+  if (els.notchSummaryModeInput) els.notchSummaryModeInput.value = mode;
+  if (els.notchSummaryModeNote) {
+    const key = mode === 'auto' ? 'settings.notch.summaryModeNote' : `settings.notch.summaryMode.${mode}Note`;
+    els.notchSummaryModeNote.dataset.i18n = key;
+    els.notchSummaryModeNote.textContent = t(key);
+  }
+}
+
+function createDockItemsComposer(root, itemsKey) {
+  return root && window.TokenMonitorEdgeDockComposer
+    ? window.TokenMonitorEdgeDockComposer.createEdgeDockComposer({
+      root, itemsKey,
+      t,
+      itemsApi: window.TokenMonitorEdgeDockItems,
+      presentationApi: window.TokenMonitorEdgeDockPresentation,
+      getSettings: () => state.settings,
+      getStats: () => state.stats,
+      pluginLabel: (ref) => (state.pluginCatalog?.plugins || [])
+        .flatMap((plugin) => plugin.views || []).find((view) => view.ref === ref)?.title || ref,
+      save: (patch) => saveSettings(patch),
+      providerLabel: (id) => window.TokenMonitorLimitProviders.LIMIT_PROVIDER_LABELS[id] || id,
+      providerColor: (id) => limitProviderColor(id),
+      windowLabel: (record, quotaWindow) => record?.provider === 'codex' && quotaWindow.additional === true
+        ? limitWindowsView.codexAdditionalWindowLabel(
+          quotaWindow,
+          (record.windows || []).filter((entry) => entry?.additional === true)
+        )
+        : limitWindowsView.providerWindowLabel(record, quotaWindow, 'Quota'),
+      hasProviderMark: (id) => limitMarksWithIcon.has(id),
+      // Offer every enabled provider in the user's limits order, including those
+      // without quota data. Keep the ordering rule here rather than in the composer.
+      enabledLimitProviders: () => limitProviderOrderApi
+        .orderedLimitProviders(LIMIT_PROVIDERS, state.settings?.limitProviderOrder)
+        .filter(({ id }) => enabledLimitProviderSet().has(id))
+        .map(({ id }) => id),
+      isWindowHidden: (providerId, quotaWindow) => limitUsageItemsApi.isLimitWindowHidden(
+        state.settings?.limitProviderHiddenItems, providerId, quotaWindow
+      ),
+      maskEmail: (email) => (state.settings?.maskLimitAccountEmails === true
+        ? accountIdentityApi.maskEmailAddress(email)
+        : String(email || '')),
+      mimoProductLabel,
+      createRowDrag: (config) => rowDragControllerApi.createRowDragController({
+        dragSort: verticalDragSortApi,
+        getScrollPanel: () => els.settingsPanel,
+        preserveScroll: preserveSettingsPanelScroll,
+        ...config
+      })
     })
-  })
-  : null;
+    : null;
+}
+const edgeDockComposer = createDockItemsComposer(els.edgeDockComposer, 'edgeDockItems');
+const notchItemsComposer = createDockItemsComposer(els.notchItemsComposer, 'notchItems');
+
+els.notchSummaryInput?.addEventListener('change', () => {
+  void saveSettings({ notchSummaryEnabled: els.notchSummaryInput.checked });
+});
+els.notchWarnColorsInput?.addEventListener('change', () => {
+  void saveSettings({ notchWarnColors: els.notchWarnColorsInput.checked });
+});
+els.notchHideSummaryInFullScreenInput?.addEventListener('change', () => {
+  void saveSettings({ notchHideSummaryInFullScreen: els.notchHideSummaryInFullScreenInput.checked });
+});
+for (const input of els.notchHoverActionInputs) {
+  input.addEventListener('change', () => {
+    if (!input.checked) return;
+    state.settings.notchHoverAction = input.value;
+    syncNotchHoverControls();
+    void saveSettings({ notchHoverAction: input.value });
+  });
+}
+els.notchProgressiveBlurInput?.addEventListener('change', () => {
+  void saveSettings({ notchProgressiveBlur: els.notchProgressiveBlurInput.checked });
+});
+els.notchHoverDelayInput?.addEventListener('input', () => syncNotchHoverDelayValue());
+els.resetNotchHoverDelayButton?.addEventListener('click', () => {
+  if (!els.notchHoverDelayInput) return;
+  els.notchHoverDelayInput.value = String(NOTCH_HOVER_DELAY_DEFAULT_MS);
+  syncNotchHoverDelayValue();
+  void saveSettings({ notchHoverDelay: NOTCH_HOVER_DELAY_DEFAULT_MS });
+});
+els.notchHoverDelayInput?.addEventListener('change', () => {
+  void saveSettings({ notchHoverDelay: Number(els.notchHoverDelayInput.value) });
+});
+els.notchSwipeGesturesInput?.addEventListener('change', () => {
+  void saveSettings({ notchSwipeGestures: els.notchSwipeGesturesInput.checked });
+});
+els.notchRunningIndicatorInput?.addEventListener('change', () => {
+  void saveSettings({ notchRunningIndicatorEnabled: els.notchRunningIndicatorInput.checked });
+});
+
+els.notchInput?.addEventListener('change', () => {
+  state.settings.notchEnabled = els.notchInput.checked;
+  syncDockControls();
+  refreshTrayComposers();
+  void saveSettings({ notchEnabled: els.notchInput.checked });
+});
+for (const input of els.notchShapeInputs) {
+  input.addEventListener('change', () => {
+    if (input.checked) void saveSettings({ notchShape: input.value });
+  });
+}
+els.notchStyleInput?.addEventListener('change', () => {
+  void saveSettings({ notchStyle: els.notchStyleInput.value });
+});
+els.notchSummaryModeInput?.addEventListener('change', () => {
+  state.settings.notchSummaryMode = els.notchSummaryModeInput.value;
+  syncNotchSummaryMode();
+  refreshTrayComposers();
+  void saveSettings({ notchSummaryMode: els.notchSummaryModeInput.value });
+});
 
 els.edgeDockInput?.addEventListener('change', () => {
   state.settings.edgeDockEnabled = els.edgeDockInput.checked;
-  els.edgeDockOptions?.classList.toggle('hidden', !els.edgeDockInput.checked);
+  syncDockControls();
   void saveSettings({ edgeDockEnabled: els.edgeDockInput.checked });
 });
 for (const input of els.edgeDockSideInputs || []) {
@@ -13151,6 +14453,12 @@ els.edgeDockRunningIndicatorInput?.addEventListener('change', () => {
 els.edgeDockMacBackdropInput?.addEventListener('change', () => {
   void saveSettings({ edgeDockMacBackdrop: macBackdropApi.normalizeEdgeDockBackdropMode(els.edgeDockMacBackdropInput.value) });
 });
+els.edgeDockWindowsBackdropInput?.addEventListener('change', () => {
+  void saveSettings({ edgeDockWindowsBackdrop: windowsBackdropApi.normalizeWindowsDockBackdropMode(els.edgeDockWindowsBackdropInput.value) });
+});
+els.notchHapticInput?.addEventListener('change', () => {
+  void saveSettings({ notchHaptic: els.notchHapticInput.checked });
+});
 els.edgeDockHapticInput?.addEventListener('change', () => {
   void saveSettings({ edgeDockHaptic: els.edgeDockHapticInput.checked });
 });
@@ -13159,22 +14467,25 @@ for (const input of els.edgeDockModeInputs || []) {
     if (input.checked) void saveSettings({ edgeDockMode: input.value });
   });
 }
-for (const input of els.edgeDockSizeInputs || []) {
-  input.addEventListener('change', () => {
-    if (!input.checked) return;
-    els.edgeDockCustomScaleRow?.classList.toggle('hidden', input.value !== 'custom');
-    void saveSettings({ edgeDockSize: input.value });
+for (const surface of ['edgeDock', 'notch']) {
+  for (const input of els[`${surface}SizeInputs`] || []) {
+    input.addEventListener('change', () => {
+      if (!input.checked) return;
+      els[`${surface}CustomScaleRow`]?.classList.toggle('hidden', input.value !== 'custom');
+      void saveSettings({ [`${surface}Size`]: input.value });
+    });
+  }
+  // Like the Zoom slider: the dock previews each step while the slider is dragged
+  // and the size is saved on release, since a save redraws the settings form.
+  els[`${surface}CustomScaleInput`]?.addEventListener('input', () => {
+    syncSliderRow(els[`${surface}CustomScaleInput`]);
+    window.tokenMonitor.previewAppearance?.({ [`${surface}CustomScale`]: Number(els[`${surface}CustomScaleInput`].value) / 100 }).catch(() => {});
+  });
+  els[`${surface}CustomScaleInput`]?.addEventListener('change', () => {
+    void saveSettings({ [`${surface}CustomScale`]: Number(els[`${surface}CustomScaleInput`].value) / 100 });
   });
 }
-// Like the Zoom slider: the dock previews each step while the slider is dragged
-// and the size is saved on release, since a save redraws the settings form.
-els.edgeDockCustomScaleInput?.addEventListener('input', () => {
-  syncSliderRow(els.edgeDockCustomScaleInput);
-  window.tokenMonitor.previewAppearance?.({ edgeDockCustomScale: Number(els.edgeDockCustomScaleInput.value) / 100 }).catch(() => {});
-});
-els.edgeDockCustomScaleInput?.addEventListener('change', () => {
-  void saveSettings({ edgeDockCustomScale: Number(els.edgeDockCustomScaleInput.value) / 100 });
-});
+
 
 for (const input of els.floatingBubbleTriggerInputs || []) {
   input.addEventListener('change', () => {
@@ -13192,8 +14503,8 @@ els.showTrayIconInput?.addEventListener('change', () => {
   state.settings.showTrayIcon = showTrayIcon;
   els.trayModeInput.disabled = !showTrayIcon;
   if (!showTrayIcon) els.trayModeInput.checked = false;
-  els.trayContentInput.disabled = !showTrayIcon;
-  els.showTrayProviderBadgeInput.disabled = !showTrayIcon;
+  els.trayContentInput.disabled = false;
+  els.showTrayProviderBadgeInput.disabled = false;
   els.trayIconOptions?.classList.toggle('hidden', !showTrayIcon);
   els.trayOptions?.classList.toggle('hidden', !showTrayIcon || !els.trayModeInput.checked);
   if (!showTrayIcon) state.settings.hideAppIcon = false;
@@ -13229,6 +14540,10 @@ els.windowToggleShortcutValue?.addEventListener('click', startWindowShortcutReco
 els.windowToggleShortcutClearButton?.addEventListener('click', () => setWindowToggleShortcut('').catch(() => {}));
 els.startAtLoginInput?.addEventListener('change', () => saveSettings({ startAtLogin: els.startAtLoginInput.checked }));
 els.automaticAppUpdatesInput?.addEventListener('change', () => saveSettings({ automaticAppUpdates: els.automaticAppUpdatesInput.checked }));
+els.proxyUrlInput?.addEventListener('input', () => markNetworkProxyDraft('proxyUrl'));
+els.proxyUrlInput?.addEventListener('change', () => saveNetworkProxySetting('proxyUrl'));
+els.noProxyInput?.addEventListener('input', () => markNetworkProxyDraft('noProxy'));
+els.noProxyInput?.addEventListener('change', () => saveNetworkProxySetting('noProxy'));
 els.glassInput.addEventListener('change', saveAppearanceFromControls);
 els.blurInput.addEventListener('change', saveAppearanceFromControls);
 els.backgroundImageOpacityInput?.addEventListener('change', saveAppearanceFromControls);
@@ -13275,6 +14590,8 @@ els.floatingBubbleTab.addEventListener('pointercancel', (event) => { finishFloat
 els.floatingBubbleTab.addEventListener('mouseenter', handleFloatingBubbleHoverEnter);
 els.floatingBubbleTab.addEventListener('mouseleave', handleFloatingBubbleHoverLeave);
 document.documentElement.addEventListener('mouseleave', handleDocumentHoverLeave);
+document.documentElement.addEventListener('mouseleave', hideTrendTooltip);
+window.addEventListener('blur', handleTrendsWindowBlur);
 document.documentElement.addEventListener('mouseenter', clearHoverCollapseTimer);
 els.floatingBubbleTab.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -13300,34 +14617,69 @@ async function runAppUpdateAction() {
 }
 
 els.appUpdatePillAction.addEventListener('click', async () => {
-  if (!renderAppUpdatePopover(state.appUpdate) || typeof els.appUpdatePopover.showPopover !== 'function') {
-    if (appUpdatePresentationApi.appUpdateActionMode(state.appUpdate) === 'install') {
-      const url = state.appUpdate?.latest?.htmlUrl;
-      if (url) await window.tokenMonitor.openExternal(url);
-      return;
-    }
-    await runAppUpdateAction();
+  // While a download or install is under way the press shows its progress.
+  if (els.appUpdatePillAction.getAttribute('aria-disabled') === 'true') {
+    showAppUpdatePopover();
     return;
   }
-  positionAppUpdatePopover();
-  els.appUpdatePopover.showPopover();
-  els.appUpdatePopoverAction.focus();
-});
-
-els.appUpdatePillRestart.addEventListener('click', async () => {
+  if (appUpdatePresentationApi.appUpdateActionMode(state.appUpdate) === 'release') hideAppUpdatePopover();
   await runAppUpdateAction();
 });
 
-els.appUpdatePillDismiss.addEventListener('click', async () => {
-  const version = state.appUpdate?.latest?.version;
-  if (!version) return;
-  state.appUpdate = await window.tokenMonitor.dismissAppUpdate(version);
-  if (els.appUpdatePopover.matches(':popover-open')) els.appUpdatePopover.hidePopover();
-  renderAppUpdatePill();
-});
+for (const target of [els.appUpdatePillAction, els.appUpdatePopover]) {
+  target.addEventListener('pointerenter', (event) => {
+    if (event.pointerType === 'touch') return;
+    if (target === els.appUpdatePopover || els.appUpdatePopover.matches(':popover-open')) clearAppUpdateCardTimers();
+    else scheduleAppUpdatePopoverOpen();
+  });
+  target.addEventListener('pointerleave', (event) => {
+    if (event.pointerType === 'touch') return;
+    scheduleAppUpdatePopoverClose();
+  });
+}
 
-els.appUpdatePopoverClose.addEventListener('click', () => {
-  els.appUpdatePopover.hidePopover();
+// Keyboard users get the card on focus, the same moment pointer users get it on
+// hover, and Tab then moves into it rather than past it.
+els.appUpdatePillAction.addEventListener('focus', () => {
+  if (suppressAppUpdateCardFocusOpen) {
+    suppressAppUpdateCardFocusOpen = false;
+    return;
+  }
+  if (els.appUpdatePillAction.matches(':focus-visible')) showAppUpdatePopover();
+});
+els.appUpdatePillAction.addEventListener('keydown', (event) => {
+  if (event.key !== 'Tab' || event.shiftKey || !els.appUpdatePopover.matches(':popover-open')) return;
+  // Dismiss while it is offered; otherwise the notes body, which is a focusable
+  // scroller. A generic button search lands on a release link deep in the notes,
+  // or finds nothing at all once Dismiss is hidden during an install.
+  const dismiss = els.appUpdatePopoverDismiss.classList.contains('hidden') || els.appUpdatePopoverDismiss.disabled
+    ? null
+    : els.appUpdatePopoverDismiss;
+  const target = dismiss || (els.appUpdatePopoverBody.classList.contains('hidden') ? null : els.appUpdatePopoverBody);
+  if (!target) return;
+  event.preventDefault();
+  target.focus();
+});
+for (const target of [els.appUpdatePillAction, els.appUpdatePopover]) {
+  target.addEventListener('focusout', (event) => {
+    const next = event.relatedTarget;
+    if (next && (els.appUpdatePopover.contains(next) || next === els.appUpdatePillAction)) return;
+    if (els.appUpdatePopover.matches(':hover') || els.appUpdatePillAction.matches(':hover')) return;
+    hideAppUpdatePopover();
+  });
+}
+
+// A manual popover, so a press on the button is not also a light dismiss: the
+// card stays up to show the download it just started. Outside presses and Escape
+// are handled here instead.
+document.addEventListener('pointerdown', (event) => {
+  if (!els.appUpdatePopover.matches(':popover-open')) return;
+  if (els.appUpdatePopover.contains(event.target) || els.appUpdatePill.contains(event.target)) return;
+  hideAppUpdatePopover();
+}, true);
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !els.appUpdatePopover.matches(':popover-open')) return;
+  hideAppUpdatePopover();
 });
 
 els.appUpdatePopover.addEventListener('toggle', (event) => {
@@ -13335,23 +14687,24 @@ els.appUpdatePopover.addEventListener('toggle', (event) => {
   if (els.appUpdatePillAction.hasAttribute('aria-haspopup')) {
     els.appUpdatePillAction.setAttribute('aria-expanded', String(open));
   }
-  if (!open) {
-    const active = document.activeElement;
-    if (active === document.body || active === els.appUpdatePopover || els.appUpdatePopover.contains(active)) {
-      els.appUpdatePillAction.focus();
-    }
-  }
 });
 
-els.appUpdatePopoverAction.addEventListener('click', async () => {
-  els.appUpdatePopover.hidePopover();
-  await runAppUpdateAction();
+els.appUpdatePopoverDismiss.addEventListener('click', async () => {
+  const version = state.appUpdate?.latest?.version;
+  if (!version) return;
+  hideAppUpdatePopover();
+  state.appUpdate = await window.tokenMonitor.dismissAppUpdate(version);
+  renderAppUpdatePill();
+  renderSettingsAppUpdateRow();
 });
 
-els.appUpdatePopoverRelease.addEventListener('click', async () => {
-  const url = state.appUpdate?.latest?.htmlUrl;
-  if (url) await window.tokenMonitor.openExternal(url);
-});
+for (const container of [els.appUpdatePopoverBody, els.appUpdateNotesBody]) {
+  container.addEventListener('click', async (event) => {
+    const link = event.target.closest('[data-release-url]');
+    if (!link || !container.contains(link)) return;
+    await window.tokenMonitor.openExternal(link.dataset.releaseUrl);
+  });
+}
 
 window.addEventListener('resize', () => {
   if (els.appUpdatePopover.matches(':popover-open')) positionAppUpdatePopover();
@@ -13367,11 +14720,6 @@ els.appUpdateViewReleaseButton.addEventListener('click', async () => {
   await runAppUpdateAction();
 });
 
-els.appUpdateReleaseNotesButton.addEventListener('click', async () => {
-  const url = state.appUpdate?.latest?.htmlUrl;
-  if (url) await window.tokenMonitor.openExternal(url);
-});
-
 window.tokenMonitor.onSettingsPush?.((next) => {
   if (!next) return;
   state.settingsPushRevision += 1;
@@ -13379,6 +14727,7 @@ window.tokenMonitor.onSettingsPush?.((next) => {
     if (JSON.stringify(next[key]) !== JSON.stringify(state.settings?.[key])) delete appearancePreview[key];
   }
   setRendererSettings(next);
+  syncPluginTrayDemand();
   applyEffectiveCurrencyRates();
   observeDisplayLiveTokenRates(state.stats);
   preserveSettingsPanelScroll(syncSettingsForm);
@@ -13486,6 +14835,8 @@ const allTimeSessions = allTimeSessionsApi.createAllTimeSessionsLoader({
   onError: (error) => console.log(`[stats] all-time sessions failed: ${error?.message || error}`)
 });
 function handleWindowVisibilityChange() {
+  syncPluginTrayDemand();
+  pluginViewHost?.refreshDemand();
   if (els.syncPanelSignal) els.syncPanelSignal.dataset.windowHidden = String(isRendererWindowHidden());
   if (!statsRenderScheduler.visibilityChanged()) return;
   if (isRendererWindowHidden()) cancelTokenRateBoost();
@@ -13494,7 +14845,7 @@ function handleWindowVisibilityChange() {
     void refreshHubBuildStatus();
   }
   const settingsVisible = isSettingsSurfaceVisible();
-  if (settingsVisible || settingsDomSyncPending) syncSettingsForm();
+  if (settingsDomSyncPending || (settingsVisible && !isNativeWindowTransfer())) syncSettingsForm();
   statsRenderScheduler.flush();
   if (settingsVisible) {
     renderConnectionStatus();
@@ -13505,10 +14856,16 @@ function handleWindowVisibilityChange() {
   ensureServiceStatusTicker();
 }
 document.addEventListener('visibilitychange', handleWindowVisibilityChange);
+document.addEventListener('visibilitychange', hideTrendTooltip);
+const windowActivationFocus = window.TokenMonitorWindowActivationFocus.create({ document, shell: els.shell, header: document.querySelector('.titlebar') });
 window.tokenMonitor.onWindowVisibilityPush?.((visible) => {
+  if (!visible) windowActivationFocus.cancel();
+  if (!visible) hideTrendTooltip();
   state.windowVisible = visible;
   handleWindowVisibilityChange();
 });
+window.tokenMonitor.onWindowSummoned(() => windowActivationFocus.summon());
+window.tokenMonitor.onWindowSummonCancelled(() => windowActivationFocus.cancel());
 
 window.tokenMonitor.onStatsPush?.((payload) => {
   if (!payload) return;
@@ -13952,22 +15309,15 @@ function drawTrayFallbackMark(ctx, value, x, y, size, color) {
 }
 
 function trayTextCanvasFont(item, fontSize, defaultWeight) {
-  const style = item?.fontStyle || 'normal';
-  const family = style === 'compactMono'
-    ? 'ui-monospace, ".AppleSystemUIFontMonospaced", "SFMono-Regular", "SF Mono", Menlo, monospace'
-    : '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif';
-  const weight = style === 'menubar' ? 700 : style === 'compactMono' ? 600 : defaultWeight;
-  return `${weight} ${fontSize}px ${family}`;
+  return window.TokenMonitorTrayTypography.font(item, fontSize, defaultWeight);
 }
 
 function trayTextHorizontalScale(item) {
-  if (item?.fontStyle === 'condensed') return 0.86;
-  if (item?.fontStyle === 'menubar') return 0.92;
-  return 1;
+  return window.TokenMonitorTrayTypography.horizontalScale(item);
 }
 
 function trayTextSpaceScale(item) {
-  return item?.fontStyle === 'compactMono' ? 0.55 : 1;
+  return window.TokenMonitorTrayTypography.spaceScale(item);
 }
 
 function trayTextRuns(ctx, text, item) {
@@ -14080,13 +15430,13 @@ function renderCustomTrayItemCanvas(item, height = 44, colors = {}, options = {}
   const textColor = colors.text || fillColor;
   const h = Math.max(16, Math.round(height));
 
+  if (item.type === 'plugin') return renderPluginTrayItemCanvas(item, h, { trackColor, textColor });
+
   if (item.type === 'spacer') {
     const isDot = item.variant === 'dot';
-    const ratios = isDot
-      ? { narrow: 0.18, regular: 0.24, wide: 0.34 }
-      : { narrow: 0.07, regular: 0.14, wide: 0.27 };
+
     const canvas = document.createElement('canvas');
-    canvas.width = Math.max(2, Math.round(h * (ratios[item.size] || ratios.regular)));
+    canvas.width = window.TokenMonitorTrayTypography.spacerWidth(item, h);
     canvas.height = h;
     if (isDot) {
       const ctx = canvas.getContext('2d');
@@ -14190,7 +15540,7 @@ function renderCustomTrayItemCanvas(item, height = 44, colors = {}, options = {}
       ? 'app'
       : trayLayoutApi.preferredRowProvider(rows, preferredIndex);
     const iconSize = h;
-    const iconGap = Math.max(2, Math.round(h * 0.08));
+    const iconGap = window.TokenMonitorTrayTypography.iconGap(h);
     const fontSize = Math.max(8, Math.round(h * 0.43));
     const font = trayTextCanvasFont(item, fontSize, 600);
     const horizontalScale = trayTextHorizontalScale(item);
@@ -14260,6 +15610,18 @@ function renderCustomTrayItemCanvas(item, height = 44, colors = {}, options = {}
   return canvas;
 }
 
+// Author drawing uses the App's bitmap composition; the OS still owns the menu.
+function renderPluginTrayItemCanvas(item, h, { trackColor, textColor }) {
+  const view = item.plugin;
+  const canvas = document.createElement('canvas'); canvas.width = h; canvas.height = h;
+  if (view?.entry && pluginViewHost?.renderTray(view, canvas, { height: h, textColor, trackColor })) return canvas;
+  const size = Math.round(h * 0.7);
+  pluginViewsApi.drawIcon(canvas.getContext('2d'), view?.icon || 'dot', {
+    x: (h - size) / 2, y: (h - size) / 2, size, color: textColor
+  });
+  return canvas;
+}
+
 function renderCustomTrayLayout(stats, layout, height = 44, colors = {}, options = {}) {
   const codexProviders = (stats?.limits?.providers || []).filter((provider) => provider?.provider === 'codex');
   const selectedCodexKey = String(state.codexActiveAccount?.accountKey || '').trim();
@@ -14274,9 +15636,10 @@ function renderCustomTrayLayout(stats, layout, height = 44, colors = {}, options
     activeAccountKeys: activeCodexKey ? { codex: activeCodexKey } : {},
     availableProviderIds: Object.keys(trayProviderImages),
     liveTokenRates: options.liveTokenRates || displayLiveTokenRateSamples(),
-    liveTokenRateFormatter: options.liveTokenRateFormatter || ((value) => formatLiveTokenRate(value))
+    liveTokenRateFormatter: options.liveTokenRateFormatter || ((value) => formatLiveTokenRate(value)),
+    pluginViews: pluginTrayViews(layout)
   });
-  const items = resolved.items.map((item) => (
+  const items = resolved.items.filter(item => item.type !== 'plugin' || item.available).map((item) => (
     item.type === 'text'
       && item.metric === 'account'
       && state.settings?.maskLimitAccountEmails === true
@@ -14347,6 +15710,7 @@ async function maybeUpdateBarsIcon(options = {}) {
   if (options.refreshComposers !== false && isSettingsSurfaceVisible()) {
     refreshTrayComposers();
     if (edgeDockAvailable() && state.settings?.edgeDockEnabled === true) edgeDockComposer?.render();
+    if (state.appInfo?.platform === 'darwin' && state.settings?.notchEnabled === true) notchItemsComposer?.render();
   } else {
     syncCustomTrayClockTimer();
   }
@@ -14553,6 +15917,9 @@ function renderStandardTrayPreview(mode, stats) {
 }
 
 function trayComposerPreview(surface) {
+  if (surface === 'notch') {
+    return { src: renderCustomTrayLayout(statsForTrayComposer(), state.settings?.notchCustomLayout, currentFloatingBubbleBitmapHeight(), floatingBubbleGeneratedColors(), { showProviderBadge: false }) };
+  }
   const isTray = surface === 'tray';
   const contentKey = isTray ? 'trayContent' : 'floatingBubbleContent';
   const layoutKey = isTray ? 'trayCustomLayout' : 'floatingBubbleCustomLayout';
@@ -14598,8 +15965,9 @@ function activateTrayComposer(surface) {
 
 function createTrayComposer(surface) {
   const isTray = surface === 'tray';
-  const root = isTray ? els.trayComposer : els.floatingBubbleComposer;
-  const layoutKey = isTray ? 'trayCustomLayout' : 'floatingBubbleCustomLayout';
+  const isNotch = surface === 'notch';
+  const root = isNotch ? els.notchComposer : isTray ? els.trayComposer : els.floatingBubbleComposer;
+  const layoutKey = isNotch ? 'notchCustomLayout' : isTray ? 'trayCustomLayout' : 'floatingBubbleCustomLayout';
   const contentKey = isTray ? 'trayContent' : 'floatingBubbleContent';
   return window.TokenMonitorTrayComposer.createTrayComposer({
     root,
@@ -14620,8 +15988,10 @@ function createTrayComposer(surface) {
       showProviderBadge: isTray && state.settings?.showTrayProviderBadge === true
     }),
     getPreview: () => trayComposerPreview(surface),
-    isEditable: () => state.settings?.[contentKey] === 'custom',
+    isEditable: () => isNotch || state.settings?.[contentKey] === 'custom',
     onCustomize: () => activateTrayComposer(surface),
+    pluginChoices: () => (state.pluginCatalog?.plugins || []).filter(plugin => plugin.status === 'active')
+      .flatMap(plugin => (plugin.views || []).filter(view => view.surfaces.includes('tray')).map(view => ({ ref: view.ref, title: `${plugin.name} · ${view.title || view.ref}` }))),
     providerChoices: trayComposerProviderChoices,
     accountChoices: trayComposerAccountChoices,
     windowChoices: trayComposerWindowChoices,
@@ -14630,6 +16000,7 @@ function createTrayComposer(surface) {
       state.settings[layoutKey] = trayLayoutApi.normalizeTrayLayout(nextLayout);
       observeDisplayLiveTokenRates(state.stats);
       if (isTray) void maybeUpdateBarsIcon({ refreshComposers: commit });
+      else if (isNotch) { if (commit) refreshTrayComposers(); }
       else {
         renderFloatingBubbleContent();
         if (commit) refreshTrayComposers();
@@ -14661,8 +16032,9 @@ function syncCustomTrayClockTimer() {
 
 function refreshTrayComposers() {
   const surfaces = [
-    { id: 'tray', root: els.trayComposer, visible: state.settings?.showTrayIcon !== false },
-    { id: 'floatingBubble', root: els.floatingBubbleComposer, visible: state.settings?.floatingBubbleEnabled === true }
+    { id: 'tray', root: els.trayComposer, visible: true },
+    { id: 'floatingBubble', root: els.floatingBubbleComposer, visible: true },
+    { id: 'notch', root: els.notchComposer, visibilityRoot: els.notchComposerDetails, visible: state.appInfo?.platform === 'darwin' && state.settings?.notchSummaryMode === 'custom' }
   ];
   window.TokenMonitorTrayComposer.syncTrayComposerSurfaces(
     surfaces,
@@ -14670,6 +16042,7 @@ function refreshTrayComposers() {
     createTrayComposer
   );
   Object.values(trayComposers).forEach((composer) => composer?.refresh());
+  displaySettings?.refreshLivePreview();
   syncCustomTrayClockTimer();
 }
 
@@ -14919,7 +16292,7 @@ function setCopilotManualExpanded(expanded) {
 
 function setCursorStatusText(el, text) {
   el.textContent = text;
-  el.title = text;
+  el.setAttribute('aria-label', text);
 }
 
 function renderCodexLoginStatus() {
@@ -15024,21 +16397,21 @@ function renderCodexAccounts() {
           : t('settings.codex.disabled')
       ].filter((value, index, values) => value && values.indexOf(value) === index);
       info.textContent = accountMetadata.join(' · ');
-      info.title = accountMetadata.join(' · ');
+      info.setAttribute('aria-label', accountMetadata.join(' · '));
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'managed-account-remove';
       remove.textContent = '✕';
-      remove.title = t('settings.codex.remove');
+      remove.setAttribute('aria-label', t('settings.codex.remove'));
       let confirmingRemove = false;
       remove.addEventListener('click', async () => {
         if (!confirmingRemove) {
           confirmingRemove = true;
           remove.classList.add('confirming');
           remove.textContent = '✓';
-          remove.title = t('settings.codex.removeConfirm', {
+          remove.setAttribute('aria-label', t('settings.codex.removeConfirm', {
             account: account.email || t('settings.codex.unnamedAccount')
-          });
+          }));
           return;
         }
         const result = await window.tokenMonitor.codex.removeAccount(account.id);
@@ -15275,7 +16648,7 @@ function renderWorkbuddyStatus() {
     const title = document.createElement('div');
     title.className = 'managed-account-email';
     title.textContent = name;
-    title.title = name;
+    title.setAttribute('aria-label', name);
     const meta = document.createElement('div');
     meta.className = 'workbuddy-account-meta';
     meta.textContent = t(account.realm === 'ai' ? 'settings.workbuddy.realmAi' : 'settings.workbuddy.realmCn');
@@ -15291,13 +16664,12 @@ function renderWorkbuddyStatus() {
     info.textContent = account.enabled === false ? t('settings.workbuddy.disabled')
       : provider ? translatedLimitProviderTag(limitProviderPresentationApi.limitProviderStatusLabel(provider))
         : t('settings.workbuddy.notChecked');
-    info.title = info.textContent;
+    info.setAttribute('aria-label', info.textContent);
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'managed-account-remove';
     remove.textContent = '✕';
-    remove.title = t('settings.workbuddy.remove');
-    remove.setAttribute('aria-label', t('settings.workbuddy.removeConfirm', { account: name }));
+    remove.setAttribute('aria-label', t('settings.workbuddy.remove'));
     remove.disabled = busy;
     let armed = false;
     remove.addEventListener('click', () => {
@@ -15306,7 +16678,7 @@ function renderWorkbuddyStatus() {
         armed = true;
         remove.classList.add('confirming');
         remove.textContent = '✓';
-        remove.title = t('settings.workbuddy.removeConfirm', { account: name });
+        remove.setAttribute('aria-label', t('settings.workbuddy.removeConfirm', { account: name }));
         return;
       }
       return mutateWorkbuddyAccount(account.id, 'remove');
@@ -15423,14 +16795,13 @@ function renderAntigravityStatus() {
       ? translatedLimitProviderTag(limitProviderPresentationApi.limitProviderStatusLabel(provider))
       : '';
     info.textContent = enabled ? (planLabel || statusLabel) : t('settings.antigravity.disabled');
-    info.title = provider?.actionRequired === 'accountVerification'
+    info.setAttribute('aria-label', provider?.actionRequired === 'accountVerification'
       ? t('settings.antigravity.verificationRequiredDetail')
-      : info.textContent;
+      : info.textContent);
     const remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'managed-account-remove';
     remove.textContent = '✕';
-    remove.title = t('settings.antigravity.remove');
     remove.setAttribute('aria-label', t('settings.antigravity.remove'));
     remove.disabled = state.antigravitySignInBusy;
     let confirmingRemove = false;
@@ -15439,8 +16810,7 @@ function renderAntigravityStatus() {
         confirmingRemove = true;
         remove.classList.add('confirming');
         remove.textContent = '✓';
-        remove.title = t('settings.antigravity.removeConfirm', { account: accountName });
-        remove.setAttribute('aria-label', remove.title);
+        remove.setAttribute('aria-label', t('settings.antigravity.removeConfirm', { account: accountName }));
         return;
       }
       remove.disabled = true;
@@ -15541,23 +16911,23 @@ function renderMimoStatus() {
         : '';
       info.textContent = !enabled ? t('settings.mimo.disabled')
         : statusLabel || limitProviderPresentationApi.limitProviderDisplayLabel(account.accountLabel);
-      info.title = info.textContent;
+      info.setAttribute('aria-label', info.textContent);
 
       const remove = detected ? null : document.createElement('button');
       if (remove) {
         remove.type = 'button';
         remove.className = 'managed-account-remove';
         remove.textContent = '✕';
-        remove.title = t('settings.mimo.remove');
+        remove.setAttribute('aria-label', t('settings.mimo.remove'));
         let confirmingRemove = false;
         remove.addEventListener('click', async () => {
           if (!confirmingRemove) {
             confirmingRemove = true;
             remove.classList.add('confirming');
             remove.textContent = '✓';
-            remove.title = t('settings.mimo.removeConfirm', {
+            remove.setAttribute('aria-label', t('settings.mimo.removeConfirm', {
               account: accountName
-            });
+            }));
             return;
           }
           const result = await window.tokenMonitor.mimo.removeAccount(account.id);
@@ -15639,13 +17009,18 @@ function clearDisabledLimitProviderPendingChecks(enabledProviders) {
 }
 
 function externalProviderForAccount(providerName) {
-  const provider = localProviderStatus(providerName);
+  // Muse's manual credential panel owns only the web session, not its CLI login.
+  const provider = providerName === 'muse'
+    ? localProviderStatuses('muse').find((row) => row.source === 'web') || null
+    : localProviderStatus(providerName);
   const config = externalLimitAccountConfig[providerName] || limitAccountForm(providerName)?.status;
   const pendingSince = Number(config ? state[config.pendingKey] : 0);
   if (!provider || !pendingSince) return provider;
   const updatedAt = Date.parse(provider.updatedAt || '');
   if (!Number.isFinite(updatedAt) || updatedAt < pendingSince) return null;
   state[config.pendingKey] = 0;
+  cancelExternalProviderCheckSettle(providerName);
+  externalProviderCheckSettled.delete(providerName);
   return provider;
 }
 
@@ -15660,19 +17035,64 @@ function setAccountPanelMessage(providerName, message) {
   else delete state.accountPanelMessages[providerName];
 }
 
-function markExternalProviderCheckPending(providerName) {
+const externalProviderCheckSettleTimers = new Map();
+const externalProviderCheckSettled = new Set();
+const EXTERNAL_PROVIDER_CHECK_SETTLE_MS = 15_000;
+
+function cancelExternalProviderCheckSettle(providerName) {
+  const timer = externalProviderCheckSettleTimers.get(providerName);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  externalProviderCheckSettleTimers.delete(providerName);
+}
+
+function scheduleExternalProviderCheckSettle(providerName) {
+  cancelExternalProviderCheckSettle(providerName);
+  const timer = setTimeout(() => {
+    externalProviderCheckSettleTimers.delete(providerName);
+    const config = externalLimitAccountConfig[providerName] || limitAccountForm(providerName)?.status;
+    if (!config || Number(state[config.pendingKey] || 0) <= 0) return;
+    // Stop the spinner, but keep the save-time cutoff: a record dated before
+    // this save must never be able to confirm the new credential.
+    externalProviderCheckSettled.add(providerName);
+    renderExternalProviderStatus(providerName);
+  }, EXTERNAL_PROVIDER_CHECK_SETTLE_MS);
+  externalProviderCheckSettleTimers.set(providerName, timer);
+}
+
+function markExternalProviderCheckPending(providerName, checkedSince = Date.now()) {
   const config = externalLimitAccountConfig[providerName] || limitAccountForm(providerName)?.status;
   if (!config) return;
-  state[config.pendingKey] = Date.now();
+  state[config.pendingKey] = checkedSince;
+  externalProviderCheckSettled.delete(providerName);
   clearExternalProviderPendingStatus(providerName);
+  scheduleExternalProviderCheckSettle(providerName);
 }
 
 function clearExternalProviderCheckPending(providerName) {
+  cancelExternalProviderCheckSettle(providerName);
+  externalProviderCheckSettled.delete(providerName);
   const config = externalLimitAccountConfig[providerName] || limitAccountForm(providerName)?.status;
   if (config) state[config.pendingKey] = 0;
 }
 
 function clearExternalProviderPendingStatus(providerName) {
+  if (providerName === 'muse') {
+    // Only this device's Web Cookie changed. Keep its CLI and remote readings.
+    const localDeviceId = state.settings?.deviceId || '';
+    const keepSource = (provider) => provider.provider !== 'muse' || provider.source !== 'web';
+    const localDevice = state.stats?.devices?.find((device) => device.deviceId === localDeviceId);
+    if (Array.isArray(localDevice?.limits?.providers)) {
+      localDevice.limits.providers = localDevice.limits.providers.filter(keepSource);
+    }
+    if (Array.isArray(state.stats?.limits?.providers)) {
+      state.stats.limits.providers = state.stats.limits.providers.filter((provider) => keepSource(provider)
+        || (provider.sourceDeviceId
+          ? provider.sourceDeviceId !== localDeviceId
+          : Array.isArray(state.stats?.devices)));
+    }
+    return;
+  }
   if (!Array.isArray(state.stats?.limits?.providers)) return;
   state.stats.limits.providers = state.stats.limits.providers.filter((provider) => provider.provider !== providerName);
 }
@@ -15772,6 +17192,191 @@ function kimiPlatformUrl() {
   return 'https://www.kimi.com/code/console';
 }
 
+function editClaudeWebAccount(account = null) {
+  claudeOrganizationChoicesRevision += 1;
+  claudeWebAccountId = account?.id || 'new';
+  claudeWebFormOpen = true;
+  const input = document.getElementById('claudeWebCookieInput');
+  if (input) input.value = '';
+  renderClaudeOrganizationChoices(account?.organizationId
+    ? [{ id: account.organizationId, name: account.accountName || account.organizationId }]
+    : [], account?.organizationId || '');
+  setAccountPanelMessage('claude', null);
+  renderExternalProviderStatus('claude');
+  input?.focus();
+  if (account?.id === 'legacy') void loadClaudeOrganizationChoices();
+}
+
+function cancelClaudeWebAccountEdit(restoreFocus = document.activeElement?.id === 'claudeCancelWebAccountButton') {
+  claudeOrganizationChoicesRevision += 1;
+  claudeWebAccountId = 'new';
+  claudeWebFormOpen = false;
+  const input = document.getElementById('claudeWebCookieInput');
+  if (input) input.value = '';
+  renderClaudeOrganizationChoices([]);
+  setAccountPanelMessage('claude', null);
+  renderExternalProviderStatus('claude');
+  if (restoreFocus) document.getElementById('claudeAddWebAccountButton')?.focus({ preventScroll: true });
+}
+
+async function runClaudeAccountAction(button, operation) {
+  return claudeAccountActions.run('claude', button, async () => {
+    setAccountPanelMessage('claude', null);
+    try {
+      const result = await commitAccountCredential(operation);
+      if (!result?.ok) throw new Error(t('settings.common.error'));
+      await refreshStats();
+      renderExternalProviderStatus('claude');
+      return result;
+    } catch (error) {
+      setAccountPanelMessage('claude', { key: 'settings.claude.saveFailed', params: { message: error.message } });
+      renderExternalProviderStatus('claude');
+      return null;
+    }
+  });
+}
+
+function claudeWebSettingsAccounts(providers) {
+  const accounts = [...(state.settings?.claudeManagedAccounts || [])];
+  if (state.settings?.claudeWebLegacyCookieConfigured) {
+    const legacy = state.settings.claudeWebLegacyAccount || providers.find((provider) => provider.source === 'web'
+      && !accounts.some((account) => account.accountKey === provider.accountKey));
+    accounts.unshift({ ...legacy, id: 'legacy', enabled: true, organizationId: state.settings.claudeWebOrganizationId || '' });
+  }
+  return accounts;
+}
+
+function claudeAccountStatusText(fallback, enabled) {
+  const providers = localProviderStatuses('claude');
+  const accounts = claudeWebSettingsAccounts(providers);
+  // Count configured Web logins even before their first result, and include
+  // discovered local identities without double-counting the same subscription.
+  const identities = new Map();
+  for (const account of accounts) {
+    const key = account.accountKey || `managed:${account.id}`;
+    const linked = enabled && account.enabled !== false
+      && providers.some((provider) => provider.accountKey && provider.accountKey === account.accountKey && provider.status === 'ok');
+    identities.set(key, identities.get(key) === true || linked);
+  }
+  for (const provider of providers) {
+    if (!provider.accountKey || provider.source === 'web' || provider.status === 'notConfigured') continue;
+    identities.set(provider.accountKey, identities.get(provider.accountKey) === true || (enabled && provider.status === 'ok'));
+  }
+  return identities.size ? t('settings.opencode.connected', {
+    linked: [...identities.values()].filter(Boolean).length, total: identities.size
+  }) : fallback;
+}
+
+function renderClaudeWebAccounts() {
+  const list = document.getElementById('claudeWebAccountList');
+  if (!list) return;
+  const providers = localProviderStatuses('claude');
+  const accounts = claudeWebSettingsAccounts(providers);
+  const statusTexts = accounts.map((account) => [account.id === 'legacy' ? t('settings.claude.legacyLogin') : '', account.accountName, account.accountLabel,
+    account.enabled === false ? t('settings.codex.disabled')
+      : apiKeyAccountStatusText('claude', { status: state.settings?.claudeWebLoginStatuses?.[account.id] || 'notChecked' },
+        true, 'settings', limitProviderEnabled('claude'))].filter(Boolean).join(' · '));
+  const signature = JSON.stringify([accounts.map((account) => [account.id, account.accountKey, account.accountEmail,
+    account.accountName, account.accountLabel, account.organizationId, account.enabled]),
+  claudeWebAccountId, claudeWebFormOpen, state.settings?.claudeWebLegacyCookieSource, currentLocale()]);
+  if (list.dataset.signature === signature) {
+    list.querySelectorAll('.managed-account-info').forEach((info, index) => {
+      info.textContent = statusTexts[index];
+      info.setAttribute('aria-label', info.textContent);
+    });
+    return;
+  }
+  list.dataset.signature = signature;
+  list.replaceChildren();
+  for (const [index, account] of accounts.entries()) {
+    const row = document.createElement('div');
+    row.className = 'managed-account-row claude-web-account-row';
+    row.classList.toggle('disabled', account.enabled === false);
+    const labelText = account.accountEmail || account.accountName || t('settings.codex.unnamedAccount');
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.className = 'managed-account-checkbox';
+    input.checked = account.enabled !== false;
+    input.disabled = account.id === 'legacy';
+    input.setAttribute('aria-label', t('settings.codex.toggleAccount', { account: labelText }));
+    input.addEventListener('change', async () => {
+      await runClaudeAccountAction(input, () => window.tokenMonitor.claude.setAccountEnabled(account.id, input.checked));
+      input.checked = (state.settings?.claudeManagedAccounts || []).find((entry) => entry.id === account.id)?.enabled !== false;
+    });
+    const main = document.createElement('div');
+    main.className = 'managed-account-main';
+    const label = document.createElement('div');
+    label.className = 'managed-account-email';
+    label.textContent = labelText;
+    const info = document.createElement('div');
+    info.className = 'managed-account-info';
+    info.textContent = statusTexts[index];
+    info.setAttribute('aria-label', info.textContent);
+    main.append(label, info);
+    const actions = document.createElement('span');
+    actions.className = 'managed-account-right';
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.textContent = t('settings.claude.updateAccount');
+    edit.addEventListener('click', () => claudeAccountActions.run('claude', edit, () => editClaudeWebAccount(account)));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'managed-account-remove';
+    remove.textContent = '✕';
+    remove.setAttribute('aria-label', t('settings.codex.remove'));
+    let confirmingRemove = false;
+    remove.addEventListener('click', () => {
+      if (!confirmingRemove) {
+        confirmingRemove = true;
+        remove.classList.add('confirming');
+        remove.textContent = '✓';
+        remove.setAttribute('aria-label', t('settings.codex.removeConfirm', { account: labelText }));
+        return;
+      }
+      return runClaudeAccountAction(remove, async () => {
+        const result = account.id === 'legacy'
+          ? { ...(await window.tokenMonitor.limits.clearCredential('claude')), ok: true }
+          : await window.tokenMonitor.claude.removeWebAccount(account.id);
+        if (result?.ok && claudeWebAccountId === account.id) {
+          claudeWebAccountId = 'new';
+          claudeWebFormOpen = false;
+          renderClaudeOrganizationChoices([]);
+        }
+        return result;
+      });
+    });
+    remove.classList.toggle('hidden', account.id === 'legacy' && state.settings?.claudeWebLegacyCookieSource === 'env');
+    const controls = document.createElement('span');
+    controls.className = 'settings-actions';
+    controls.append(edit);
+    actions.append(controls, remove);
+    row.append(input, main, actions);
+    list.append(row);
+  }
+  const add = document.createElement('button');
+  add.id = 'claudeAddWebAccountButton';
+  add.type = 'button';
+  add.textContent = t('settings.codex.addAccount');
+  add.setAttribute('aria-expanded', String(claudeWebFormOpen ?? accounts.length === 0));
+  add.addEventListener('click', () => claudeAccountActions.run('claude', add, () => editClaudeWebAccount()));
+  const actions = document.createElement('div');
+  actions.className = 'settings-actions';
+  actions.append(add);
+  if (claudeWebFormOpen ?? accounts.length === 0) {
+    const cancel = document.createElement('button');
+    cancel.id = 'claudeCancelWebAccountButton';
+    cancel.type = 'button';
+    cancel.textContent = t('settings.common.cancel');
+    cancel.addEventListener('click', () => {
+      // Capture before the busy guard disables Cancel and blurs it.
+      const restoreFocus = document.activeElement === cancel;
+      return claudeAccountActions.run('claude', cancel, () => cancelClaudeWebAccountEdit(restoreFocus));
+    });
+    actions.append(cancel);
+  }
+  list.append(actions);
+}
+
 function renderExternalProviderStatus(providerName) {
   const config = externalLimitAccountConfig[providerName] || limitAccountForm(providerName)?.status;
   const statusEl = document.getElementById(`${providerName}AccountStatus`);
@@ -15798,7 +17403,8 @@ function renderExternalProviderStatus(providerName) {
   errorEl.classList.toggle('error', message?.tone !== 'notice');
   const configured = Boolean(state.settings?.[config.configuredKey]);
   const enabled = limitProviderEnabled(providerName);
-  const pending = enabled && Number(state[config.pendingKey] || 0) > 0;
+  const settled = externalProviderCheckSettled.has(providerName);
+  const pending = enabled && Number(state[config.pendingKey] || 0) > 0 && !settled;
   const linked = externalProviderAccountLinked(providerName);
   // A pending check that comes back linked folds the panel: the refresh that
   // followed the save may have returned before the new record did.
@@ -15806,10 +17412,15 @@ function renderExternalProviderStatus(providerName) {
   const form = limitAccountForm(providerName);
   if (form) limitAccountPanelsApi.syncCredentialFields(form, { document, settings: state.settings });
   if (providerName === 'volcengine') renderVolcengineAgentOverrideState();
-  setCursorStatusText(
-    statusEl,
-    pending ? t('settings.common.checking') : apiKeyAccountStatusText(providerName, provider, configured, source, enabled)
-  );
+  if (providerName === 'claude') renderClaudeWebAccounts();
+  // Once the settle window lapses without a fresh record, show "not checked"
+  // instead of a permanent spinner; the cutoff above still blocks the old
+  // record from being read as a confirmed link.
+  const statusProvider = provider || (settled && configured && enabled ? { status: 'noSyncedData' } : null);
+  const statusText = pending ? t('settings.common.checking')
+    : apiKeyAccountStatusText(providerName, statusProvider, configured, source, enabled);
+  setCursorStatusText(statusEl, providerName === 'claude' && !pending
+    ? claudeAccountStatusText(statusText, enabled) : statusText);
   // A local ZCode install keeps the Z.ai row honest when unchecked: the
   // auto-discovered plans still exist, so the pill shows auto-detect instead
   // of the final "disabled" state the generic seven-state map lands on.
@@ -15818,6 +17429,12 @@ function renderExternalProviderStatus(providerName) {
   }
   manualPanel.classList.toggle('hidden', linked);
   openBtn.classList.toggle('hidden', linked);
+  if (providerName === 'claude') {
+    const showForm = claudeWebFormOpen ?? (!(state.settings?.claudeManagedAccounts || []).length && !state.settings?.claudeWebLegacyCookieConfigured);
+    manualPanel.classList.toggle('hidden', !showForm);
+    document.getElementById('claudeWebOrganizationRow')?.classList.toggle('hidden', !showForm || !document.getElementById('claudeWebOrganizationIdInput')?.options.length);
+    openBtn.classList.remove('hidden');
+  }
   const discoveredLogin = (providerName === 'zai' && source === 'zcode-auto')
     || (providerName === 'cline' && source === 'cline-signin');
   if (discoveredLogin) {
@@ -15829,6 +17446,7 @@ function renderExternalProviderStatus(providerName) {
   }
   const canClearConfiguredCredential = source === 'settings' && configured;
   logoutBtn.classList.toggle('hidden', !canClearConfiguredCredential);
+  if (providerName === 'claude') logoutBtn.classList.add('hidden');
   refreshBtn.classList.toggle('hidden', !configured);
   renderSettingsSummaries();
 }
@@ -15920,7 +17538,7 @@ function renderOpenCodeProfiles() {
 
     // The auto-detected key counts as an account: it is what the limits card is
     // reading, so leaving it out of the total reports "not set up" next to live
-    // quota. It has no toggle or delete because Token Monitor does not own that
+    // quota. It has no delete because Token Monitor does not own that
     // credential — OpenCode does — but naming it does belong here: a name is
     // what lets it join an account, and typing an existing account's name is
     // how a user says the two are the same OpenCode account.
@@ -15935,7 +17553,8 @@ function renderOpenCodeProfiles() {
       ambientToggle.className = 'profile-toggle';
       ambientToggle.type = 'checkbox';
       ambientToggle.checked = ambientEnabled;
-      ambientToggle.title = t('settings.opencode.ambientDetail');
+      ambientToggle.setAttribute('aria-label', t('settings.opencode.ambientName'));
+      ambientToggle.setAttribute('aria-description', t('settings.opencode.ambientDetail'));
       ambientToggle.addEventListener('change', async () => {
         await window.tokenMonitor.opencode.setAmbientEnabled(ambientToggle.checked);
         renderOpenCodeProfiles();
@@ -15952,7 +17571,7 @@ function renderOpenCodeProfiles() {
       nameInput.className = 'profile-name-input is-placeholder';
       nameInput.type = 'text';
       nameInput.placeholder = t('settings.opencode.ambientName');
-      nameInput.title = t('settings.opencode.nameAmbient');
+      nameInput.setAttribute('aria-label', t('settings.opencode.nameAmbient'));
 
       // Typing an existing account's name binds the auto-detected key into that
       // account. That claim is confirmed, never inferred: the main process
@@ -16051,8 +17670,7 @@ function renderOpenCodeProfiles() {
       const renameBtn = document.createElement('button');
       renameBtn.type = 'button';
       renameBtn.className = 'profile-rename-btn';
-      renameBtn.title = t('settings.opencode.rename');
-      renameBtn.setAttribute('aria-label', renameBtn.title);
+      renameBtn.setAttribute('aria-label', t('settings.opencode.rename'));
 
       let editing = false;
       function beginRename() {
@@ -16136,7 +17754,7 @@ function renderOpenCodeProfiles() {
         detail.type = 'button';
         detail.classList.add('is-expandable');
         detail.setAttribute('aria-expanded', 'false');
-        detail.title = t('settings.opencode.showCredentials');
+        detail.setAttribute('aria-label', t('settings.opencode.showCredentials'));
         // The same disclosure chevron every other group uses, so it animates and
         // reads the same; only the direction differs, pointing right when closed.
         chevron = document.createElement('span');
@@ -16159,14 +17777,14 @@ function renderOpenCodeProfiles() {
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'profile-delete';
       deleteBtn.textContent = '✕';
-      deleteBtn.title = t('settings.opencode.delete');
+      deleteBtn.setAttribute('aria-label', t('settings.opencode.delete'));
       let confirmingDelete = false;
       deleteBtn.addEventListener('click', async () => {
         if (!confirmingDelete) {
           confirmingDelete = true;
           deleteBtn.classList.add('confirming');
           deleteBtn.textContent = '✓';
-          deleteBtn.title = t('settings.opencode.deleteConfirm', { name });
+          deleteBtn.setAttribute('aria-label', t('settings.opencode.deleteConfirm', { name }));
           return;
         }
         await api.deleteProfile(name);
@@ -16309,7 +17927,7 @@ function opencodeCredentialRow(accountName, kind, label) {
   nameInput.className = 'credential-name-input';
   nameInput.type = 'text';
   nameInput.value = accountName;
-  nameInput.title = t('settings.opencode.moveCredential', { kind: label });
+  nameInput.setAttribute('aria-label', t('settings.opencode.moveCredential', { kind: label }));
   nameInput.placeholder = t('settings.opencode.profileNamePlaceholder');
 
   const actions = document.createElement('span');
@@ -16360,7 +17978,7 @@ function opencodeCredentialRow(accountName, kind, label) {
   const removeBtn = document.createElement('button');
   removeBtn.className = 'profile-delete';
   removeBtn.textContent = '✕';
-  removeBtn.title = t('settings.opencode.removeCredential', { kind: label });
+  removeBtn.setAttribute('aria-label', t('settings.opencode.removeCredential', { kind: label }));
   // Two-step, like deleting an account: unbinding is not undoable from here.
   let confirming = false;
   removeBtn.addEventListener('click', async () => {
@@ -16621,7 +18239,7 @@ function appendNamedApiProfileRow(listEl, config) {
     const detailSpan = document.createElement('span');
     detailSpan.className = 'profile-detail';
     detailSpan.textContent = detail;
-    detailSpan.title = detail;
+    detailSpan.setAttribute('aria-label', detail);
     nameBox.append(detailSpan);
   }
 
@@ -16633,8 +18251,7 @@ function appendNamedApiProfileRow(listEl, config) {
     const renameBtn = document.createElement('button');
     renameBtn.type = 'button';
     renameBtn.className = 'profile-rename-btn';
-    renameBtn.title = t('settings.profiles.rename');
-    renameBtn.setAttribute('aria-label', renameBtn.title);
+    renameBtn.setAttribute('aria-label', t('settings.profiles.rename'));
     let editing = false;
     const finishRename = async (save) => {
       if (!editing) return;
@@ -16682,14 +18299,14 @@ function appendNamedApiProfileRow(listEl, config) {
     const deleteBtn = document.createElement('button');
     deleteBtn.className = 'profile-delete';
     deleteBtn.textContent = '✕';
-    deleteBtn.title = t('settings.profiles.delete');
+    deleteBtn.setAttribute('aria-label', t('settings.profiles.delete'));
     let confirming = false;
     deleteBtn.addEventListener('click', async () => {
       if (!confirming) {
         confirming = true;
         deleteBtn.classList.add('confirming');
         deleteBtn.textContent = '✓';
-        deleteBtn.title = t('settings.profiles.deleteConfirm', { name });
+        deleteBtn.setAttribute('aria-label', t('settings.profiles.deleteConfirm', { name }));
         return;
       }
       const result = await api.deleteProfile(name);
@@ -16896,14 +18513,13 @@ function renderCursorStatus() {
           : account.error
             ? t('settings.common.error')
             : planLabel;
-      info.title = info.textContent;
+      info.setAttribute('aria-label', info.textContent);
       right.append(info);
       if (account.removable === true && !managementBlocked) {
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'managed-account-remove';
         remove.textContent = '✕';
-        remove.title = t('settings.cursor.remove');
         remove.setAttribute('aria-label', t('settings.cursor.remove'));
         let confirmingRemove = false;
         remove.addEventListener('click', async () => {
@@ -16911,8 +18527,7 @@ function renderCursorStatus() {
             confirmingRemove = true;
             remove.classList.add('confirming');
             remove.textContent = '✓';
-            remove.title = t('settings.cursor.removeConfirm', { account: accountName });
-            remove.setAttribute('aria-label', remove.title);
+            remove.setAttribute('aria-label', t('settings.cursor.removeConfirm', { account: accountName }));
             return;
           }
           remove.disabled = true;
@@ -16956,7 +18571,7 @@ function setCursorCheckboxesEnabled(enabled) {
   row?.classList.toggle('disabled', !enabled);
   if (input) {
     input.disabled = !enabled;
-    input.title = enabled ? '' : t('settings.cursor.loginRequired');
+    input.setAttribute('aria-description', enabled ? '' : t('settings.cursor.loginRequired'));
   }
 }
 
@@ -17033,7 +18648,7 @@ function renderCustomPricing() {
     const main = document.createElement('button');
     main.type = 'button';
     main.className = 'managed-account-main custom-pricing-edit';
-    main.title = t('settings.customPricing.edit');
+    main.setAttribute('aria-description', t('settings.customPricing.edit'));
     main.addEventListener('click', () => { if (openCustomPricingForm) openCustomPricingForm(ov); });
     const name = document.createElement('div');
     name.className = 'managed-account-email';
@@ -17397,7 +19012,7 @@ function setupCursorAccountUI() {
   setCursorManualExpanded(false);
 
   document.getElementById('cursorLoginButton').addEventListener('click', () => {
-    window.tokenMonitor.openExternal('https://cursor.com/dashboard');
+    window.tokenMonitor.openExternal('https://cursor.com');
   });
 
   const cursorManualSubmit = document.getElementById('cursorManualSubmit');
@@ -17441,7 +19056,7 @@ function setupCursorAccountUI() {
     addToggle?.addEventListener('click', () => setOpenCodeAddExpanded(addDetails?.classList.contains('hidden')));
 
     document.getElementById('opencodeOpenBrowser')?.addEventListener('click', () => {
-      window.tokenMonitor.openExternal('https://opencode.ai/auth');
+      window.tokenMonitor.openExternal('https://opencode.ai/console');
     });
 
     // API key is the default: it needs no browser round trip. The cookie stays
@@ -18098,6 +19713,15 @@ setupSettingsAccordion(
   document.getElementById('syncContentDetails'), expanded => syncContentForm.setExpanded(expanded)
 );
 setupSettingsSections();
+const displaySettingsPreview = window.TokenMonitorDisplaySettingsPreview.create({
+  window, document, bridge: window.tokenMonitor, settings: () => state.settings,
+  bitmap: trayComposerPreview, stats: () => state.stats, t
+});
+displaySettings = window.TokenMonitorDisplaySettings.create({
+  document, root: document.getElementById('windowSettingsDetails').querySelector('.settings-section-details-inner'),
+  scrollPanel: els.settingsPanel, t, platform: () => state.appInfo?.platform, settings: () => state.settings,
+  preview: displaySettingsPreview.show, cancelScroll: cancelSettingsScrollAnchorOnInteraction
+});
 setupCursorAccountUI();
 setupCustomPricingUI();
 setupModelAliasesUI();

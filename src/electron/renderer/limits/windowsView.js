@@ -166,7 +166,15 @@
       if (!groups.has(entry.groupLabel)) groups.set(entry.groupLabel, []);
       groups.get(entry.groupLabel).push(entry);
     }
-    return [...groups].map(([label, windows]) => ({ label, windows }));
+    // Keep the original quota pairs in place even when normalization places
+    // Argon beside the other Gemini windows. This order belongs to the view.
+    const groupOrder = ['Gemini', 'Claude/GPT', 'Gemini 4 Argon'];
+    const rank = ({ label }) => {
+      const index = groupOrder.indexOf(label);
+      return index < 0 ? groupOrder.length : index;
+    };
+    return [...groups].map(([label, windows]) => ({ label, windows }))
+      .sort((a, b) => rank(a) - rank(b));
   }
 
   function formatLimitAmount(value) {
@@ -454,7 +462,8 @@
       if (!wrap.isConnected) return;
       tooltip.showPopover?.();
       // Measured after opening: a closed popover has no box to measure.
-      tooltip.classList.toggle('is-below', wrap.getBoundingClientRect().top < tooltip.offsetHeight + 8);
+      const top = deps.tooltipTop?.() ?? 0;
+      tooltip.classList.toggle('is-below', wrap.getBoundingClientRect().top - top < tooltip.offsetHeight + 8);
       positionCenteredDetailTooltip(tooltip);
     };
     const close = () => {
@@ -495,8 +504,10 @@
     info.setAttribute(
       'aria-label',
       ariaLabel || entries
-        .filter(Array.isArray)
-        .map(([entryLabel, ...rest]) => `${entryLabel}: ${rest.filter(Boolean).join(' ')}`)
+        .map((entry) => Array.isArray(entry)
+          ? `${entry[0]}: ${entry.slice(1).filter(Boolean).join(' ')}`
+          : entry?.full)
+        .filter(Boolean)
         .join(', ')
     );
     const tooltip = detailTooltipNode(entries, columns);
@@ -633,18 +644,16 @@
     const balance = provider?.balance || null;
     const usage = provider?.usageSummary || null;
     const currency = balance?.currency || 'USD';
-    const allTimeSpend = optionalFiniteNumber(balance?.allTimeSpend);
-    const monthSpend = optionalFiniteNumber(balance?.monthSpend);
     const entries = [];
     const total = optionalFiniteNumber(quotaWindow?.limit);
     const requestCount = optionalFiniteNumber(balance?.requestCount);
     const quotaGroup = String(balance?.quotaGroup || '').trim();
-    const expiresAt = balance?.expiresAt ? new Date(balance.expiresAt) : null;
     if (total !== null) entries.push([t('settings.thirdparty.totalQuota'), formatMoney(total, currency)]);
     if (requestCount !== null) {
       entries.push([t('settings.thirdparty.requests'), Math.max(0, Math.trunc(requestCount)).toLocaleString()]);
     }
     if (quotaGroup) entries.push([t('settings.thirdparty.group'), quotaGroup]);
+    const expiresAt = balance?.expiresAt ? new Date(balance.expiresAt) : null;
     if (expiresAt && !Number.isNaN(expiresAt.getTime())) {
       entries.push([t('settings.thirdparty.expires'), expiresAt.toLocaleDateString()]);
     }
@@ -672,20 +681,35 @@
       const standardCost = optionalFiniteNumber(usage.standardCost);
       if (standardCost !== null) entries.push([t('settings.thirdparty.standardCost'), formatMoney(standardCost, currency)]);
     }
-    if (allTimeSpend === null && monthSpend === null && entries.length === 0) return null;
+    // Only New API account dashboards add period details. Other adapters keep
+    // their existing Month/All time summary and account-only tooltip.
+    const isNewApiAccount = provider?.adapterId === 'newapi-account';
+    const spendValues = providerSpendEntries(balance)
+      .filter(([label]) => isNewApiAccount || label === 'Month' || label === 'All time');
+    const spendRows = spendValues.map(([label, value]) => [label, formatMoney(value, currency)]);
+    if (spendRows.length === 0 && entries.length === 0) return null;
     // Without a spend figure the row has nothing to summarize, so it retitles
     // itself and leans entirely on the tooltip.
-    const summary = [
-      ...(monthSpend !== null ? [`Month ${formatMoney(monthSpend, currency)}`] : []),
-      ...(allTimeSpend !== null ? [`All time ${formatMoney(allTimeSpend, currency)}`] : [])
-    ].join(' · ');
+    const preferredSpend = isNewApiAccount
+      ? spendValues.filter(([label]) => label === 'Today' || label === 'Month')
+      : spendValues;
+    const summaryValues = preferredSpend.length > 0 ? preferredSpend : spendValues.slice(0, 2);
+    const summary = summaryValues
+      .map(([label, value]) => `${label} ${formatMoney(value, currency)}`)
+      .join(' · ');
+    const periodDetails = isNewApiAccount && spendRows.length > summaryValues.length ? spendRows : [];
+    const detailEntries = [
+      ...entries,
+      ...(entries.length > 0 && periodDetails.length > 0 ? [{ full: '', separated: true }] : []),
+      ...periodDetails
+    ];
     const node = limitNoteRowNode({
       label: summary ? 'Spend' : 'Details',
       summary,
-      detailEntries: entries,
+      detailEntries: detailEntries.length > 0 ? detailEntries : null,
       ariaParts: [
-        ...(summary ? [summary] : []),
-        ...entries.map(([entryLabel, value]) => `${entryLabel} ${value}`)
+        ...entries.map(([entryLabel, value]) => `${entryLabel} ${value}`),
+        ...spendRows.map(([entryLabel, value]) => `${entryLabel} ${value}`)
       ]
     });
     return tagUsageItem(node, 'spend', summary ? 'Spend' : 'Details');
@@ -1008,7 +1032,9 @@
         }
       } else {
         const weeklyWindows = windowsForKind(provider, 'weekly');
-        const visibleWindows = weeklyWindows.length > 0 ? weeklyWindows : [null];
+        const visibleWindows = weeklyWindows.length > 0
+          ? weeklyWindows.filter(presentationApi.antigravityQuotaWindowVisible)
+          : [null];
         for (const quotaWindow of visibleWindows) {
           const node = limitWindowNode(providerWindowLabel(provider, quotaWindow, 'Weekly'), quotaWindow, color, 0.78);
           node.classList.add('limit-window-wide');
@@ -1247,6 +1273,7 @@
       for (const billing of billingWindows) {
         const node = limitWindowNode(providerWindowLabel(provider, billing), billing, color, 0.68);
         node.classList.add('limit-window-wide');
+        if (!billing.resetsAt && !billing.resetDescription) node.classList.add('limit-window-no-reset');
         windows.append(node);
       }
     } else if (provider.provider === 'zed') {
@@ -1547,6 +1574,10 @@
       }
       if (weekly) windows.append(limitWindowNode(providerWindowLabel(provider, weekly), weekly, color, 0.68));
     } else if (provider.provider === 'ollama') {
+      const spent = spendWindow(provider);
+      const visibleSpend = options.showAllUsageItems || !usageItems.isLimitWindowHidden(settings()?.limitProviderHiddenItems, 'ollama', spent)
+        ? spent : null;
+      let hasWallet = false;
       const session = windowForKind(provider, 'session');
       const weekly = windowForKind(provider, 'weekly');
       if (session) {
@@ -1555,6 +1586,46 @@
         windows.append(node);
       }
       if (weekly) windows.append(limitWindowNode('Weekly', weekly, color, 0.68));
+      for (const monthly of windowsForKind(provider, 'billing').filter((window) => !window.metric)) {
+        const node = limitWindowNode(providerWindowLabel(provider, monthly), monthly, color, 0.95);
+        node.classList.add('limit-window-wide');
+        windows.append(node);
+      }
+      // Included credits have a real denominator. Wallet balances do not;
+      // their showMeter:false survives both local and synced presentation.
+      for (const creditsWindow of (provider.windows || []).filter((window) => isCreditsWindow(window) && window.showMeter !== false)) {
+        const amount = creditsAmount(provider, creditsWindow);
+        if (amount === null) continue;
+        const node = limitWindowNode(
+          providerWindowLabel(provider, creditsWindow, 'Balance'),
+          { ...creditsWindow, remainingPercent: creditsMeterPercent(provider, creditsWindow, { inferBalance: creditsWindow.showMeter !== false }) },
+          color,
+          0.95,
+          formatMoney(amount, creditsCurrency(provider, creditsWindow))
+        );
+        node.classList.add('limit-window-wide');
+        if (!creditsWindow.resetsAt && !creditsWindow.resetDescription) node.classList.add('limit-window-no-reset');
+        windows.append(node);
+      }
+      for (const wallet of (provider.windows || []).filter((window) => isCreditsWindow(window) && window.showMeter === false)) {
+        if (!options.showAllUsageItems && usageItems.isLimitWindowHidden(settings()?.limitProviderHiddenItems, 'ollama', wallet)) continue;
+        const amount = creditsAmount(provider, wallet);
+        if (amount === null) continue;
+        const details = [];
+        if (visibleSpend && Number.isFinite(visibleSpend.used)) details.push([visibleSpend.label || 'Monthly credits used', formatMoney(visibleSpend.used, visibleSpend.currency)]);
+        if (wallet.resetDescription) details.push({ full: wallet.resetDescription });
+        const label = providerWindowLabel(provider, wallet, 'Credit balance');
+        const value = formatMoney(amount, creditsCurrency(provider, wallet));
+        const node = limitNoteRowNode({ label, summary: value, detailEntries: details.length ? details : null, ariaParts: [value] });
+        tagUsageItem(node, 'credits', label);
+        windows.append(node);
+        hasWallet = true;
+      }
+      if (!hasWallet && spent && Number.isFinite(spent.used)) {
+        const node = limitWindowNode(spent.label || 'Monthly credits used', { ...spent, showMeter: false }, color, 0.68, formatMoney(spent.used, spent.currency));
+        node.classList.add('limit-window-wide', 'limit-window-no-reset');
+        windows.append(node);
+      }
     } else if (provider.provider === 'claude') {
       // Claude usually shows session + one all-models weekly, but can carry a second
       // model-scoped weekly (the temporary "Fable only" promo cap). Render every
@@ -1592,6 +1663,25 @@
       // compact line; the ⓘ tooltip carries each grant's label and coverage.
       const resetNode = claudeResetCreditsNode(provider.resetCredits);
       if (resetNode) windows.append(resetNode);
+    } else if (provider.provider === 'manus') {
+      // The refreshing allowance is a quota with a reset; the spendable total is a
+      // points balance without a ceiling. The default branch renders neither a
+      // daily window nor a credits balance.
+      const balanceWindow = (provider.windows || []).find(isCreditsWindow) || null;
+      const quotaNodes = (provider.windows || [])
+        .filter((window) => window !== balanceWindow && (window.kind === 'daily' || window.kind === 'billing'))
+        .map((window) => limitWindowNode(providerWindowLabel(provider, window), window, color, 0.78));
+      if (quotaNodes.length === 1) quotaNodes[0].classList.add('limit-window-wide');
+      windows.append(...quotaNodes);
+      const balanceValue = balanceWindow ? creditsBalanceValue(provider, balanceWindow) : '';
+      if (balanceValue) {
+        const label = balanceWindow.label || 'Credits';
+        windows.append(tagUsageItem(limitNoteRowNode({
+          label,
+          summary: balanceValue,
+          ariaParts: [balanceValue]
+        }), 'credits', label));
+      }
     } else if (provider.provider === 'notion') {
       // Both included allowances are percentage quotas. Monthly is a billing
       // window, which the default session/weekly branch would omit.
@@ -1640,6 +1730,22 @@
       if (session) windows.append(limitWindowNode(providerWindowLabel(provider, session), session, color, 0.95));
       if (weekly) windows.append(limitWindowNode(providerWindowLabel(provider, weekly), weekly, color, 0.68));
       for (const creditsWindow of (provider.windows || []).filter(isCreditsWindow)) {
+        // Muse supplies the token balance as display text; keep it ahead of the
+        // monetary fallback without changing the underlying credits reading.
+        if (provider.provider === 'muse' && creditsWindow.resetDescription?.endsWith(' tokens left')) {
+          const label = 'Additional tokens';
+          const tokenText = creditsWindow.resetDescription.replace(/ tokens left$/u, '');
+          const amount = /^(\d+(?:\.\d+)?)([KMB])?$/iu.exec(tokenText);
+          // Convert the displayed abbreviation only for unit formatting; this
+          // rounded website value never becomes a measured token count.
+          const tokenCount = amount && Number(amount[1]) * ({ K: 1e3, M: 1e6, B: 1e9 }[amount[2]?.toUpperCase()] || 1);
+          windows.append(tagUsageItem(limitNoteRowNode({
+            label,
+            summary: amount ? formatCompact(tokenCount) : tokenText,
+            ariaParts: [creditsWindow.resetDescription]
+          }), usageItems.limitUsageItemId(creditsWindow), label));
+          continue;
+        }
         const amount = creditsAmount(provider, creditsWindow);
         if (amount === null) continue;
         const balanceNode = limitWindowNode(
@@ -1653,6 +1759,7 @@
         if (!creditsWindow.resetsAt && !creditsWindow.resetDescription) balanceNode.classList.add('limit-window-no-reset');
         windows.append(balanceNode);
       }
+      repairWindowPairs(windows);
     }
     if (!options.showAllUsageItems) {
       hideUsageItems(windows, usageItems.hiddenUsageItemSet(settings()?.limitProviderHiddenItems, provider?.provider));
@@ -1712,6 +1819,9 @@
     };
     for (const record of records || []) {
       if (record) collect(renderProviderWindows(record, color, { showAllUsageItems: true }));
+      // Ollama spending stays independently selectable when folded into the wallet tooltip.
+      const spent = record?.provider === 'ollama' ? spendWindow(record) : null;
+      if (spent && Number.isFinite(spent.used)) items.set('spend', spent.label || 'Monthly credits used');
     }
     return [...items].map(([id, label]) => ({ id, label }));
   }
@@ -1722,6 +1832,7 @@
   // same account. Providers identified by email need no entry — the default below
   // already masks them.
   const LIMIT_ACCOUNT_TITLES = {
+    muse: museSourceTitle,
     codex: codexAccountTitle,
     opencode: opencodeAccountTitle,
     openrouter: (provider, index) => namedApiAccountTitle(provider, index, 'openrouter'),
@@ -2093,7 +2204,7 @@
 
     head.append(title, value);
     item.append(openButton, head, detail);
-    openButton.title = t('limits.codexResetForecast.openSource');
+    openButton.setAttribute('aria-label', t('limits.codexResetForecast.openSource'));
     openButton.setAttribute('aria-label', [label.textContent, value.textContent, detail.textContent, t('limits.codexResetForecast.openSource')].filter(Boolean).join(', '));
     return item;
   }
@@ -2121,6 +2232,41 @@
       renderProviderWindows(provider, color)
     );
     if (id === 'codex' && !options.accountRow) appendCodexResetForecast(row);
+    if (deps.history && settings()?.limitsHistoryOpenMode !== 'off' && (provider.windows || []).some(window => (
+      !usageItems.isLimitWindowHidden(settings()?.limitProviderHiddenItems, provider.provider, window)
+      && !(provider.provider === 'codex' && settings()?.showCodexAdditionalLimits === false && window.additional === true)
+      && (typeof window.usedPercent === 'number' || window.metric === 'credits' && typeof window.remaining === 'number'
+      || window.metric === 'spend' && typeof window.used === 'number')
+    ))) {
+      const key = deps.history.key(provider);
+      const openHistory = (interactive) => {
+        if (!row.isConnected) return;
+        const rect = row.getBoundingClientRect();
+        void deps.history.open(key, { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, interactive).catch(() => {});
+      };
+      let hoverTimer = null;
+      row.addEventListener('pointerenter', () => {
+        deps.history.enter(key);
+        if (settings()?.limitsHistoryOpenMode === 'click') return;
+        if (deps.history.activeKey?.()) openHistory(false);
+        else hoverTimer = setTimeout(() => openHistory(false), 160);
+      });
+      row.addEventListener('pointerleave', () => { clearTimeout(hoverTimer); deps.history.leave(key); });
+      row.dataset.limitHistory = key;
+      row.classList.toggle('is-history-active', deps.history.activeKey?.() === key);
+      row.tabIndex = 0;
+      row.setAttribute('aria-description', t('limits.history.open'));
+      row.addEventListener('keydown', event => {
+        if (event.target !== row || !['Enter', ' '].includes(event.key)) return;
+        event.preventDefault();
+        if (event.repeat) return;
+        clearTimeout(hoverTimer); openHistory(true);
+      });
+      row.addEventListener('click', event => {
+        if (event.target.closest('button, a, input, select, summary, [role="button"]')) return;
+        clearTimeout(hoverTimer); openHistory(true);
+      });
+    }
     return row;
   }
 
@@ -2158,6 +2304,9 @@
     }),
     workbuddy: (provider, color, { grouped }) => ({
       options: grouped ? { showIcon: false } : {}
+    }),
+    muse: (provider, color, { grouped }) => ({
+      options: grouped ? { showIcon: false } : provider?.source ? { title: limitAccountTitle('muse', provider, 0) } : {}
     }),
     mimo: (provider, color, { grouped }) => ({
       options: { accountTitle: true, ...(grouped ? { showIcon: false } : {}) }
@@ -2281,6 +2430,14 @@
     }) || `Account ${index + 1}`;
   }
 
+  function museSourceTitle(provider, index, providers = [provider]) {
+    const title = provider?.source === 'cli' ? 'Muse Code' : provider?.source === 'web' ? 'Muse' : '';
+    if (!title) return limitAccountDefaultTitle(provider, index, providers);
+    if (providers.filter((row) => row.source === provider.source).length < 2) return title;
+    const device = presentationApi.limitProviderProvenance(provider, provenanceContext()).selectedDeviceLabel;
+    return [title, device].filter(Boolean).join(' · ');
+  }
+
   function codexAccountTitle(provider, index, providers = [provider]) {
     const label = accountIdentity.codexAccountDisplayLabel(provider, providers, {
       maskEmail: limitAccountEmailsMasked(),
@@ -2359,6 +2516,8 @@
   // one; leaving it to the caller is what let the dock card render a group with
   // no count at all while the page showed one.
   function limitGroupCountText(providerId, count) {
+    // Muse rows name product sources, not linked accounts.
+    if (providerId === 'muse') return '';
     const key = GROUP_COUNT_KEYS[providerId] || `settings.${providerId}.nAccounts`;
     const text = t(key, { count });
     // A provider with no key of its own would otherwise print the key itself.
@@ -2378,7 +2537,9 @@
       groupAccounts: providers
     };
     row.append(renderLimitProviderHead(providerId, label, groupProvider, color, {
-      planText: count ? limitGroupCountText(providerId, count) : '',
+      planText: providerId === 'muse' && subscriptionsForProviderGroup(providerId, providers).length
+        ? t('settings.subscriptions.title')
+        : count ? limitGroupCountText(providerId, count) : '',
       hideMeta: true,
       ...(markId ? { markId } : {})
     }));
@@ -2747,6 +2908,8 @@
     if (rows.length === 0) return null;
     const card = document.createElement('span');
     card.className = 'limit-detail-tooltip subscription-tooltip';
+    card.setAttribute('role', 'tooltip');
+    const notes = new Set();
     for (const row of rows) {
       if (row.separator) {
         const rule = document.createElement('span');
@@ -2763,13 +2926,11 @@
       const value = document.createElement('span');
       if (row.warn) value.className = 'subscription-tooltip-warn';
       value.textContent = row.value;
-      if (row.title) {
-        label.title = row.title;
-        value.title = row.title;
-      }
+      if (row.title) notes.add(row.title);
       line.append(label, value);
       card.append(line);
     }
+    if (notes.size) card.setAttribute('aria-description', [...notes].join(' '));
     return card;
   }
 
@@ -2814,6 +2975,8 @@
     wrap.className = 'limit-plan limit-detail-tooltip-wrap subscription-plan-wrap';
     wrap.classList.toggle('has-opened', tooltipHost.hasOpened());
     wrap.tabIndex = 0;
+    const description = card.getAttribute('aria-description');
+    if (description) wrap.setAttribute('aria-description', description);
     const trigger = document.createElement('span');
     trigger.className = 'subscription-plan-trigger';
     trigger.textContent = plan.textContent;

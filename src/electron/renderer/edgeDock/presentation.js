@@ -79,6 +79,31 @@
       : null;
   }
 
+  // An account whose only figure is money — a Sub2API or custom third-party
+  // balance, Claude's prepaid credits, an Ollama cookie balance — ships it as a
+  // credits window with showMeter: false, because there is no quota denominator
+  // to divide by, and the collector says exactly that where it emits the window.
+  // The compact selection finds no pool, so the row used to reach the rail as an
+  // error cell printing `--` while the card, the tray and the Limits page all had
+  // the balance.
+  //
+  // The money is a legitimate glance figure, so the cell prints it. The
+  // percentage is not: the meters exclude this window precisely because such a
+  // figure would be invented, and the card already reads the same window as a
+  // wallet row rather than a meter. So this headline carries the window and no
+  // remaining, and the rail gets its number from the credits figure the renderer
+  // takes off the headline window.
+  function balanceOnlyHeadline(provider) {
+    if (!provider || provider.status !== 'ok' || provider.stale) return null;
+    for (const window of Array.isArray(provider.windows) ? provider.windows : []) {
+      if (!window || !balanceDisplay.isCreditsWindow(window)) continue;
+      if (window.showMeter !== false) continue;
+      if (balanceDisplay.creditsAmount(provider, window) === null) continue;
+      return { window, remaining: null };
+    }
+    return null;
+  }
+
   function accountSummary(provider, options = {}) {
     const windowKey = options.windowKey || '';
     const selection = trayText.compactLimitSelection(provider);
@@ -88,7 +113,7 @@
     const headline = windowKey
       ? (chosenWindow && trayText.remainingPercent(chosenWindow, provider) !== null
         ? { window: chosenWindow, remaining: trayText.remainingPercent(chosenWindow, provider) } : null)
-      : headlinePick(selection);
+      : (headlinePick(selection) || balanceOnlyHeadline(provider));
     return {
       status: provider?.status === 'ok' && !provider?.stale ? 'ok' : (provider?.stale ? 'stale' : 'error'),
       planLabel: String(provider?.planLabel || provider?.accountLabel || ''),
@@ -102,6 +127,10 @@
       // Automatic mode warns for the tightest metered pool. A pinned window
       // keeps both the number and its colour tied to that chosen pool.
       severityPercent: windowKey ? (headline?.remaining ?? null) : (selection ? selection.tightestPercent : null),
+      // The automatic headline fell through to a money-only account: it has a
+      // figure to print and no percentage to warn with. The cell picks this to
+      // keep such an account selectable after the percentage comparison.
+      headlineIsMoney: Boolean(headline && headline.remaining === null && headline.window),
       // The card renders its quota rows from the shared Limits view, which
       // reads the collector record itself. Projecting the windows here is what
       // made the card a second, less-informed implementation of the same rows:
@@ -200,6 +229,9 @@
       if (Number.isFinite(lastUsedMs)) native.set(key, { key, session: accounted
         ? { ...session, totalTokens: accounted.session.totalTokens, costUsd: accounted.session.costUsd,
           unpricedTokens: accounted.session.unpricedTokens, models: accounted.session.models,
+          inputTokens: accounted.session.inputTokens, cacheReadTokens: accounted.session.cacheReadTokens,
+          cacheWriteTokens: accounted.session.cacheWriteTokens, cacheReported: accounted.session.cacheReported,
+          tokenDataUnavailable: accounted.session.tokenDataUnavailable === true,
           nativeSessionId: session.nativeSessionId || accounted.session.nativeSessionId,
           t3ThreadId: session.t3ThreadId || accounted.session.t3ThreadId,
           parentSessionId: session.parentSessionId || accounted.session.parentSessionId,
@@ -228,7 +260,7 @@
         parentClient: normalizedId(session.parentClient || session.client),
         parentSessionId: String(session.parentSessionId || ''),
         grokBotSession: session.grokBotSession,
-        title: String(session.title || ''),
+        title: sessionRowsApi.sessionTitleForDisplay(session),
         projectLabel: String(session.projectLabel || ''),
         // Carried so the renderer keys its state map and its flare cache on
         // the same identity this projection used, instead of re-deriving one
@@ -244,16 +276,21 @@
         // could not reproduce from a flattened winner.
         models: session.models || (session.model ? { [session.model]: finite(session.totalTokens) || 0 } : {}),
         promptCache: session.promptCache || null,
+        reasoningEffort: sessionLive.isSessionReasoningEffortClient(session.client) ? session.reasoningEffort || null : null,
         contextTokens: finite(session.contextTokens),
         contextWindow: finite(session.contextWindow),
         totalTokens: finite(session.totalTokens) || 0,
+        inputTokens: finite(session.inputTokens) || 0,
+        cacheReadTokens: finite(session.cacheReadTokens) || 0,
+        cacheWriteTokens: finite(session.cacheWriteTokens) || 0,
+        cacheReported: session.cacheReported === true,
         costUsd: finite(session.costUsd ?? session.reportedCostUsd) || 0,
         ...(session.unpricedTokens > 0 ? { unpricedTokens: finite(session.unpricedTokens) || 0 } : {}),
         lastUsedAt: session.lastUsedAt || null,
         startedAt: session.startedAt || null,
         // Carried onto the projected row, not just used here: the dock renderer
         // re-derives the state at paint time and needs the boundary to do it.
-        turnEnded: session.turnEnded === true,
+        turnEnded: session.turnEnded,
         liveActivity: session.liveActivity || null,
         waitingForInput: session.client === 'codex' && session.waitingForInput === true,
         // The archive flags ride along for the same reason, and their absence was a
@@ -277,11 +314,21 @@
   // Group the complete source list before selecting recent/running rows. Keep
   // accounting identities on the members; summaries exist only in presentation.
   function groupedSessionRows(stats, options = {}) {
-    const entries = sessionSourceRows(stats);
-    const states = new Map(entries.map(({ key, session }) => [key, sessionLive.sessionActivityState(session)]));
+    const sources = sessionSourceRows(stats);
     const botIds = new Set(Array.isArray(stats?.grokBotSessionIds) ? stats.grokBotSessionIds
-      : sessionRowsApi.grokBotSessionIdsForMaps([Object.fromEntries(entries.map(({ key, session }) => [key, session]))],
+      : sessionRowsApi.grokBotSessionIdsForMaps([Object.fromEntries(sources.map(({ key, session }) => [key, session]))],
         Object.values(stats?.periods || {}).map(period => period?.sessions)));
+    // Resolve bot identity before activity, then retain it for deferred
+    // projection and paint-time expiry checks, including Claude-only periods.
+    const entries = sources.map(entry => {
+      const { key, session } = entry;
+      const client = normalizedId(session.client);
+      const grokBot = sessionLive.isGrokBotSession(client === session.client ? session : { ...session, client }, key)
+        || (client === 'cursor' && botIds.has(String(session.sessionId || '').trim() || key.replace(/^cursor:/, '')));
+      if (client === session.client && (!grokBot || session.grokBotSession === true)) return entry;
+      return { ...entry, session: { ...session, client, ...(grokBot ? { grokBotSession: true } : {}) } };
+    });
+    const states = new Map(entries.map(({ key, session }) => [key, sessionLive.sessionActivityState(session)]));
     // Resolve all group identities and totals before caps, but build display
     // rows (context, archive flags and member DTOs) only for selected groups.
     const entriesByKey = new Map();
@@ -297,7 +344,7 @@
         key: `session:${key}`, kind: 'session', client,
         clientLabel: options.clientLabels?.[client] || client,
         nativeSessionId: normalizedId(session.nativeSessionId), t3ThreadId: String(session.t3ThreadId || ''),
-        name: String(session.title || session.projectLabel || sessionId.slice(0, 12) || '—'),
+        name: sessionRowsApi.sessionTitleForDisplay(session) || String(session.projectLabel || sessionId.slice(0, 12) || '—'),
         titled: Boolean(session.title || session.projectLabel),
         modelTokens: models,
         value: finite(session.totalTokens) || 0, cost: finite(session.costUsd ?? session.reportedCostUsd) || 0,
@@ -305,11 +352,8 @@
         tokenDataUnavailable: session.tokenDataUnavailable === true,
         parentKey: parentSessionId && (parentClient !== client || parentSessionId !== sessionId)
           ? `session:${parentClient}:${parentSessionId}` : undefined,
-        grokBot: client === 'cursor' && (sessionRowsApi.isGrokBotSession({ client, sessionId, models,
-          grokBotSession: session.grokBotSession }, key) || botIds.has(sessionId)),
-        activityState: client === session.client ? states.get(key) : sessionLive.sessionActivityState({ client, lastUsedAt: session.lastUsedAt, liveActivity: session.liveActivity,
-          turnEnded: session.turnEnded === true, archived: session.archived === true, deleted: session.deleted === true,
-          sourceDeleted: session.sourceDeleted === true, waitingForInput: session.client === 'codex' && session.waitingForInput === true }), running: states.get(key) === 'running',
+        grokBot: client === 'cursor' && session.grokBotSession === true,
+        activityState: states.get(key), running: states.get(key) === 'running',
         sortTime: entry.lastUsedMs
       };
     });
@@ -322,12 +366,7 @@
         return ['running', 'waiting'].find(state => memberStates.includes(state)) || memberStates[0] || 'idle';
       }
       const session = entriesByKey.get(row.key).session;
-      return sessionLive.sessionActivityState(row.client === session.client ? session : {
-        client: row.client, lastUsedAt: session.lastUsedAt, liveActivity: session.liveActivity,
-        turnEnded: session.turnEnded === true, archived: session.archived === true,
-        deleted: session.deleted === true, sourceDeleted: session.sourceDeleted === true,
-        waitingForInput: session.client === 'codex' && session.waitingForInput === true
-      }, now);
+      return sessionLive.sessionActivityState(session, now);
     };
     const projected = new Map();
     const projectMember = key => {
@@ -348,10 +387,14 @@
           ? parent.title || parent.projectLabel || parent.sessionId.slice(0, 12) || '—' : summary.name,
         models,
         totalTokens: summary.value, costUsd: summary.cost,
+        inputTokens: members.reduce((sum, row) => sum + row.inputTokens, 0),
+        cacheReadTokens: members.reduce((sum, row) => sum + row.cacheReadTokens, 0),
+        cacheWriteTokens: members.reduce((sum, row) => sum + row.cacheWriteTokens, 0),
+        cacheReported: members.some(row => row.cacheReported),
         unpricedTokens: summary.unpricedTokens,
         tokenDataUnavailable: summary.tokenDataUnavailable === true,
         lastUsedAt: new Date(summary.sortTime).toISOString(),
-        // Context and cache are the latest main record’s own snapshots,
+        // Context and prompt-cache expiry are the latest main record’s snapshots,
         // inherited above; totals and activity cover the whole group.
         sessionGroup: summary.sessionGroup, subagentGroup: summary.subagentGroup, subagentCount: summary.subagentCount,
         running: sessionActivityState({ groupRows: members }) === 'running',
@@ -525,14 +568,21 @@
     // If the active row is hidden or has no usable value, fall back to the
     // tightest visible account rather than leaving the rail blank.
     let tightest = null;
+    // A money-only account has no percentage to compare, so it cannot join the
+    // tightest race. It waits in its own lane and is used only when no account
+    // reported a metered pool, which keeps a real quota headline first.
+    let moneyOnly = null;
     for (const account of projected) {
-      if (account.summary.headlineRemaining === null) continue;
+      if (account.summary.headlineRemaining === null) {
+        if (!moneyOnly && account.summary.headlineIsMoney) moneyOnly = account;
+        continue;
+      }
       if (!tightest || account.summary.headlineRemaining < tightest.summary.headlineRemaining) tightest = account;
     }
     const activeHeadline = id === 'codex' && options.accountMode !== 'lowest'
       ? projected.find((account) => account.summary.active && account.summary.headlineRemaining !== null) || null
       : null;
-    const headline = activeHeadline || tightest;
+    const headline = activeHeadline || tightest || moneyOnly;
     const headlineWindow = headline?.summary.headlineWindow || null;
     const headlineCredits = headlineWindow && balanceDisplay.isCreditsWindow(headlineWindow)
       ? {
@@ -712,7 +762,8 @@
   }
 
   // Two answers, because the rail and the subscription matcher want different
-  // ones. `byId` is what the cell draws, so it is gated on `hasReportableData`.
+  // ones. `byId` is what the cell draws, gated on `hasReportableData` for the
+  // ordinary rail; the top detail opts into aggregate failures.
   // `allById` is every account the provider has, gate ignored, because a
   // subscription binds to the account rather than to the row.
   //
@@ -745,7 +796,9 @@
     }
     for (const provider of providers) {
       const id = normalizedId(provider?.provider);
-      if (!id || !hasReportableData(provider)) continue;
+      // The top entry's detail keeps unavailable accounts in the aggregate,
+      // with the shared view's status/recovery UI. The ordinary rail stays gated.
+      if (!id || (!options.includeUnavailableAccounts && !hasReportableData(provider))) continue;
       if (!byId.has(id)) byId.set(id, []);
       byId.get(id).push(provider);
     }
@@ -768,6 +821,7 @@
     const groupedSessions = items.some(item => item.metric === dockItems.SESSIONS_METRIC
       || (item.type === 'limit' && options.limitsEnabled !== false))
       ? groupedSessionRows(stats) : { rows: [], project: row => row, stateFor: sessionActivityState };
+    const pluginRefs = Array.isArray(options.availablePluginRefs) ? new Set(options.availablePluginRefs) : null;
     const cells = [];
     for (const item of items) {
       if (item.type === 'stat') {
@@ -775,6 +829,11 @@
         // item was configured with, and the projection is the only place that
         // knows how to apply them.
         cells.push(statCell(stats, item.metric, { ...options, ...item, groupedSessions }));
+      } else if (item.type === 'plugin') {
+        if (pluginRefs && !pluginRefs.has(item.ref)) continue;
+        // Plugin cells carry only their ref; the plugin's live content reaches
+        // the dock on its own channel and is drawn into the cell in place.
+        cells.push({ id: `plugin:${item.ref}`, kind: 'plugin', ref: item.ref });
       } else if (item.type === 'limit' && options.limitsEnabled !== false) {
         // An explicitly chosen provider keeps its slot while it has nothing to
         // report (it renders as `--`), so the user's layout does not reshuffle
