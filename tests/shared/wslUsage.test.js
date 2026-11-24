@@ -9,6 +9,7 @@ const {
   emptyWslBundle,
   wslUsageHomes,
   homeHasData,
+  detectWslClientsAsync,
   collectWslUsage
 } = require('../../src/shared/wslUsage');
 
@@ -50,6 +51,37 @@ test('each shared host directory discovers and attributes a WSL-only home', asyn
     assert.deepEqual(wslUsageHomes(deps), [home]);
     const { detected } = await collectWslUsage({ clients: client, runTokscale: async () => ({ entries: [] }) }, deps);
     assert.deepEqual(detected, [client]);
+  }
+});
+
+test('native-only Copilot WSL home is discovered and its usage is collected', async () => {
+  const home = '\\\\wsl$\\Ubuntu\\home\\alice';
+  const marker = require('node:path').win32.join(home, '.copilot', 'session-state');
+  const deps = {
+    platform: 'win32',
+    exec: (cmd) => cmd === 'reg' ? 'Lxss' : 'Ubuntu\n',
+    readdirSync: (dir) => dir === '\\\\wsl$\\Ubuntu\\home' ? ['alice'] : [],
+    existsSync: (value) => value === marker
+  };
+  assert.deepEqual(homeHasData(home, deps.existsSync, deps.readdirSync), ['copilot']);
+  assert.deepEqual(wslUsageHomes(deps), [home]);
+  const calls = [];
+  const { bundle, detected } = await collectWslUsage({
+    clients: 'copilot',
+    commandTimeoutMs: 120000,
+    allTimeTimeoutMs: 1800000,
+    runTokscale: async (args) => {
+      calls.push(args);
+      return { entries: [{ client: 'copilot', model: 'gpt-5', inputTokens: 75, outputTokens: 25 }] };
+    }
+  }, deps);
+  assert.deepEqual(detected, ['copilot']);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls.map(call => call.commandTimeoutMs), [120000, 120000, 1800000]);
+  assert.ok(calls.every(args => args.clients === 'copilot' && args.flags.includes(home)));
+  for (const period of ['today', 'month', 'allTime']) {
+    assert.equal(bundle[period].totalTokens, 100);
+    assert.equal(bundle[period].clients.copilot, 100);
   }
 });
 
@@ -434,7 +466,7 @@ test('collectWslUsage scans a Proma-only WSL home through tokscale --home', asyn
   assert.equal(bundle.today.clients.proma, 10);
 });
 
-test('collectWslUsage keeps Qoder CN and CatPaw out of WSL scans', async () => {
+test('collectWslUsage includes JSONL-only Qoder CN but excludes CatPaw', async () => {
   const home = '\\\\wsl$\\Ubuntu\\home\\u';
   const seen = [];
   const { detected } = await collectWslUsage(
@@ -452,11 +484,11 @@ test('collectWslUsage keeps Qoder CN and CatPaw out of WSL scans', async () => {
       platform: 'win32',
       exec: (cmd) => (cmd === 'reg' ? 'Lxss' : 'Ubuntu\n'),
       readdirSync: () => ['u'],
-      existsSync: (p) => p === `${home}\\.claude\\projects`
+      existsSync: (p) => p === `${home}\\.claude\\projects` || p === `${home}\\.qoder-cn\\projects`
     }
   );
-  assert.deepEqual(detected, ['claude']);
-  assert.deepEqual(seen, ['claude', 'claude', 'claude']);
+  assert.deepEqual(detected, ['claude', 'qodercn']);
+  assert.deepEqual(seen, ['claude,qodercn', 'claude,qodercn', 'claude,qodercn']);
 });
 
 test('collectWslUsage returns empty bundle when no homes', async () => {
@@ -487,4 +519,32 @@ test('collectWslUsage logs and skips a home that throws, keeps others', async ()
   assert.equal(bundle.today.totalTokens, 7); // Ubuntu counted, Debian skipped
   assert.equal(logs.length, 1);
   assert.match(logs[0], /Debian/);
+});
+
+test('detectWslClientsAsync probes requested clients asynchronously in a single pass', async () => {
+  assert.deepEqual(await detectWslClientsAsync({ platform: 'darwin' }), []);
+  const order = [];
+  const checkedPaths = [];
+  const probe = detectWslClientsAsync({
+    platform: 'win32',
+    clients: ['hermes', 'codex'],
+    exec: async (cmd) => {
+      if (cmd === 'wsl.exe') await new Promise((resolve) => setTimeout(resolve, 40));
+      return cmd === 'reg' ? 'Lxss' : 'Ubuntu\n';
+    },
+    readdir: async () => ['alice'],
+    exists: async (target) => {
+      checkedPaths.push(target);
+      return target === '\\\\wsl$\\Ubuntu\\home\\alice\\.hermes';
+    }
+  }).then((result) => {
+    order.push('probe');
+    return result;
+  });
+  await new Promise((resolve) => setTimeout(() => { order.push('timer'); resolve(); }, 10));
+  const detected = await probe;
+  assert.deepEqual(order, ['timer', 'probe']);
+  assert.deepEqual(detected, ['hermes']);
+  assert.equal(checkedPaths.filter((p) => p.endsWith('\\.hermes')).length, 1);
+  assert.equal(checkedPaths.some((p) => p.includes('\\.claude\\')), false);
 });

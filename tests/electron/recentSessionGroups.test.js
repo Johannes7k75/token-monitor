@@ -168,11 +168,12 @@ function renderStatusGroup(group, metric = 'used') {
   const tooltip = { setDetailTooltip() {} };
   const home = Function('document', 'window', 'state', 'els', 'pluginContent', 'sessionTooltipShouldHoldRender',
     'renderBreakdownChange', 'VIEW_ICON_CLASSES', 't', 'applyHomeListMark', 'iconKindFor', 'clientColors', 'stableColor', 'fallbackModelColors',
-    'bindHoverMarquee', 'formatCompact', 'homeSessionAgo', 'sessionRowsApi', 'limitWindowsView',
+    'bindHoverMarquee', 'formatCompact', 'homeSessionAgo', 'sessionRowsApi', 'limitWindowsView', 'homeModulePreferencesApi',
     `${shellSource}; ${contextSource}; ${homeSource}; return renderHomeSessionModule;`)(
     document, { TokenMonitorEdgeDockPresentation: presentation, TokenMonitorSessionLive: sessionLive },
     state, { homePanel: { children: [], querySelector: () => null } }, null, () => false,
-    () => {}, {}, translate, () => {}, () => '', {}, () => '', [], () => {}, String, () => '', rowApi, tooltip
+    () => {}, {}, translate, () => {}, () => '', {}, () => '', [], () => {}, String, () => '', rowApi, tooltip,
+    require('../../src/electron/renderer/homeModulePreferences')
   )([group]);
   const dockContext = dock.slice(dock.indexOf('function contextNode('), dock.indexOf('// Last activity seen'));
   const dockSource = dock.slice(dock.indexOf('const expandedSessionGroups ='), dock.indexOf('function providerCard('));
@@ -308,7 +309,9 @@ test('Home keeps family membership below the title and routes mouse and keyboard
       && node.children[0]?.textContent === rowApi.sessionModelLabel(group));
     assert.ok(modelIndex >= 0 && countIndex > modelIndex, 'models precede membership like Sessions');
     assert.equal(description.children[countIndex].textContent, '2 subagents');
-    assert.equal(description.children.at(-1).textContent, ' · just now');
+    // The live row's age would only say "just now", so membership ends the line.
+    assert.equal(description.children.at(-1).textContent, '2 subagents');
+    assert.equal(description.textContent.includes('just now'), false, 'a live row carries no age');
     assert.equal(row.attributes.role, undefined, 'rows do not create nested navigation buttons');
     assert.equal(row.handlers.click, undefined);
     assert.equal(row.dataset.key, group.key);
@@ -475,10 +478,10 @@ test('Dock retains child activity flare history and scopes expansion pruning to 
     }, translate, ''
   );
   const child = group.groupRows.find(row => row.client === 'claude');
-  assert.doesNotMatch(activityApi.stateMark(child, child.key, 'running').className, /pulse/);
+  assert.equal(activityApi.stateMark(child, child.key, 'running').dataset.activityPulse, undefined);
   activityApi.pruneActivity([group]);
   const updated = { ...child, lastUsedAt: new Date(Date.parse(child.lastUsedAt) + 1).toISOString() };
-  assert.match(activityApi.stateMark(updated, child.key, 'running').className, /pulse/);
+  assert.equal(activityApi.stateMark(updated, child.key, 'running').dataset.activityPulse, String(Date.parse(updated.lastUsedAt)));
 
   const expansion = dock.slice(dock.indexOf('const expandedSessionGroups ='), dock.indexOf('function sessionsContainer('));
   const state = { payload: { cell: { id: 'sessions' } } };

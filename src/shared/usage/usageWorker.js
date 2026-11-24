@@ -48,9 +48,46 @@ const transform = createUsageTransform({
   })
 });
 
+// Return dead heap to the OS after publishing.
+//
+// On a large corpus, a full scan left about 44 MiB live, but the 96 MiB threshold
+// with 32 MiB of post-GC headroom left about 93 MiB committed. A 64 MiB threshold
+// with 16 MiB of headroom collects after that scan and keeps the isolate near its
+// live set. The 10-second minimum interval bounds collection frequency during
+// watch-tick bursts, and a collection that reclaims little still raises the
+// next threshold above the live set.
+const GC_THRESHOLD_BYTES = 64 * 1024 * 1024;
+const GC_MIN_INTERVAL_MS = 10_000;
+let gcThresholdBytes = GC_THRESHOLD_BYTES;
+let lastGcAt = 0;
+
+function collectDeadHeap() {
+  const startedAt = Date.now();
+  if (startedAt - lastGcAt < GC_MIN_INTERVAL_MS) return;
+  if (process.memoryUsage().heapUsed < gcThresholdBytes) return;
+  lastGcAt = startedAt;
+  // Let the tick and postMessage serialization finish. A local inspector session
+  // collects this worker's isolate without changing V8 flags or opening a port.
+  setImmediate(async () => {
+    let session;
+    try {
+      const { Session } = require('node:inspector/promises');
+      session = new Session();
+      session.connect();
+      await session.post('HeapProfiler.collectGarbage');
+      gcThresholdBytes = Math.max(GC_THRESHOLD_BYTES, process.memoryUsage().heapUsed + 16 * 1024 * 1024);
+    } catch (_) {
+      // GC is best effort; inspector failure must not stop usage publication.
+    } finally {
+      session?.disconnect();
+    }
+  });
+}
+
 function transformed(type, summary, reason) {
   const visible = transform.transform(summary, reason, { preview: type === 'preview' });
   post({ type, summary: visible, reason, archive: transform.getState(), diagnostics: diagnostics() });
+  collectDeadHeap();
   return visible;
 }
 

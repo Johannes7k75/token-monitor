@@ -3,6 +3,9 @@
 const os = require('node:os');
 const path = require('node:path');
 const { CARD_MOVE_MS, CARD_SPRING, advanceCardFrame } = require('../cardSpring');
+const { createCardMotionDriver } = require('../cardMotion');
+const { cardCanvasBounds, createCardPointerRouting } = require('../cardCanvas');
+const { CARD_FADE_IN_MS: FADE_IN_MS, CARD_FADE_OUT_MS: FADE_OUT_MS, CARD_FRAME_MS: FADE_STEP_MS, parkedCardBounds, createCardWindowVisibility } = require('../cardWindow');
 const {
   EDGE_DOCK_METRICS,
   createEdgeDockIntent,
@@ -19,7 +22,9 @@ const {
   edgeDockRefreshBounds,
   edgeDockRefreshCorridor,
   edgeDockScale,
+  edgeDockBubbleScale,
   edgeDockTriggerBounds,
+  edgeDockOvershootBounds,
   normalizeEdgeDockCustomScale,
   normalizeEdgeDockDisplayId,
   normalizeEdgeDockFloatingX,
@@ -39,14 +44,10 @@ const SURFACES = Object.freeze(['peek', 'rail', 'bubble']);
 // Space transition itself takes longer than this, so a faster poll would only
 // spend window-list reads without making the dock react sooner.
 const FULL_SCREEN_POLL_MS = 500;
-const FADE_IN_MS = 150;
-const FADE_OUT_MS = 120;
 const REFRESH_RESULT_HOLD_MS = 900;
 const REFRESH_FADE_OUT_MS = 200;
-const FADE_STEP_MS = 16;
 const WAKE_TOPMOST_RETRY_MS = 500;
 const RAIL_MORPH_MS = 160;
-const CARD_FRAME_STALE_MS = 64;
 
 function edgeDockSupported(platform = process.platform) {
   return platform === 'darwin' || platform === 'win32';
@@ -94,6 +95,11 @@ function createEdgeDockController(deps) {
     onSwitchCodexAccount,
     canRefreshLimits = () => false,
     onRefreshLimits,
+    // A quota row's own refresh button on the card: (providerId, account).
+    onRefreshLimitAccount,
+    // The limits probes in flight, so the card's rows can spin for a refresh
+    // they did not start; re-sent to a card window when it (re)loads.
+    limitProbes = () => [],
     onOpenResetForecastSource,
     performHaptic = () => false,
     // (display) => whether another app is full screen on that display.
@@ -110,7 +116,6 @@ function createEdgeDockController(deps) {
   // the bounds the layout wants while a surface is parked.
   const parked = { rail: false, bubble: false };
   const placed = { rail: null, bubble: null };
-  const fades = new Map();
   const backdrops = new Map();
   const backdropShapes = new WeakMap();
   const intent = createEdgeDockIntent();
@@ -129,6 +134,7 @@ function createEdgeDockController(deps) {
   let bubblePlaced = null;
   let bubbleShapeFailed = false;
   let bubbleVisible = false;
+  let bubbleReveal = 0;
   let railVisible = false;
   let pointerOnRail = false;
   const refreshHapticTarget = Symbol('refresh');
@@ -163,11 +169,7 @@ function createEdgeDockController(deps) {
   let refreshFeedbackWindow = null;
   let drag = null;
   let bubbleFrame = null;
-  let bubblePointerMode = null;
   let bubbleMotion = null;
-  let bubbleMotionTimer = null;
-  let lastCardFrameAt = null;
-  let nextBubbleMotionId = 0;
   let railMotion = null;
   let railMotionTimer = null;
   let railHitPolygons = [];
@@ -263,6 +265,7 @@ function createEdgeDockController(deps) {
   let scaled = { key: '', scale: 1, metrics: EDGE_DOCK_METRICS };
   // A size still being dragged on the Settings slider, shown but not yet saved.
   let previewScale = null;
+  let previewBubbleScale = null;
   function requestedScale() {
     return previewScale ?? edgeDockScale(settings());
   }
@@ -279,6 +282,14 @@ function createEdgeDockController(deps) {
     return scaled.scale;
   }
 
+  function bubbleScale() {
+    return previewBubbleScale ?? edgeDockBubbleScale(settings(), dockScale());
+  }
+
+  function bubbleMetrics() {
+    return scaledEdgeDockMetrics(bubbleScale());
+  }
+
   function metrics() {
     dockScale();
     return scaled.metrics;
@@ -287,8 +298,8 @@ function createEdgeDockController(deps) {
   // The pages' zoom follows the size whenever the geometry is placed, since the
   // fitted size moves with the cells and the display as well as the setting.
   function syncPageZoom() {
-    const scale = dockScale();
     for (const surface of SURFACES) {
+      const scale = surface === 'bubble' ? bubbleScale() : dockScale();
       const win = windows[surface];
       if (alive(win) && win.webContents.getZoomFactor?.() !== scale) win.webContents.setZoomFactor(scale);
     }
@@ -296,7 +307,7 @@ function createEdgeDockController(deps) {
 
   function maxCardHeight() {
     const workArea = display()?.workArea;
-    return workArea ? Math.floor((workArea.height - EDGE_DOCK_METRICS.screenMargin * 2) / dockScale()) : null;
+    return workArea ? Math.floor((workArea.height - EDGE_DOCK_METRICS.screenMargin * 2) / bubbleScale()) : null;
   }
 
   function layout() {
@@ -308,7 +319,8 @@ function createEdgeDockController(deps) {
     const rail = edgeDockRailBounds({ workArea, side: dockSide, offset, floatingX, cellKinds: cellKinds(), metrics: m });
     const side = floatingX === null ? dockSide : rail.x + rail.width / 2 < workArea.x + workArea.width / 2 ? 'left' : 'right';
     const cardSpace = side === 'left' ? workArea.x + workArea.width - rail.x - rail.width : rail.x - workArea.x;
-    const bubbleWidth = floatingX === null ? m.bubbleWidth : Math.min(m.bubbleWidth, cardSpace - m.bubbleGap - m.bubbleTail - m.screenMargin);
+    const bm = bubbleMetrics();
+    const bubbleWidth = Math.min(bm.bubbleWidth, cardSpace - bm.bubbleGap - bm.bubbleTail - bm.screenMargin);
     const peek = edgeDockPeekBounds({ workArea, side, railBounds: rail, metrics: m });
     // The handle as drawn takes the pointer; the resting handle alone decides the
     // fast reveal, so how soon the rail opens never depends on how far the
@@ -316,12 +328,13 @@ function createEdgeDockController(deps) {
     const handle = edgeDockHandleBounds({ side, peekBounds: peek, handle: handleSize(), metrics: m });
     const restingHandle = edgeDockHandleBounds({ side, peekBounds: peek, metrics: m });
     const trigger = edgeDockTriggerBounds({ workArea, displayBounds: current.bounds, side, railBounds: rail, metrics: m });
+    const overshoot = edgeDockOvershootBounds({ side, triggerBounds: trigger, metrics: m });
     const zones = edgeDockHandleZones({ side, peekBounds: peek, metrics: m });
     const bubble = bubbleCell !== null
-      ? edgeDockBubbleBounds({ railBounds: rail, cellIndex: bubbleCell, height: Math.round(Math.min(bubbleHeight, maxCardHeight() ?? Infinity) * dockScale()), workArea, side, metrics: { ...m, bubbleWidth } })
+      ? edgeDockBubbleBounds({ railBounds: rail, cellIndex: bubbleCell, height: Math.round(Math.min(bubbleHeight, maxCardHeight() ?? Infinity) * bubbleScale()), workArea, side, metrics: { ...bm, bubbleWidth } })
       : null;
     const refresh = edgeDockRefreshBounds({ workArea, displayBounds: current.bounds, railBounds: rail, metrics: m });
-    return { side, workArea, rail, peek, handle, restingHandle, trigger: floatingX === null ? trigger : null, wake: floatingX === null ? zones?.wake || null : null, approach: floatingX === null ? zones?.approach || null : null, bubble, bubbleWidth, refresh };
+    return { side, workArea, rail, peek, handle, restingHandle, trigger: floatingX === null ? trigger : null, overshoot: floatingX === null ? overshoot : null, wake: floatingX === null ? zones?.wake || null : null, approach: floatingX === null ? zones?.approach || null : null, bubble, bubbleWidth, refresh };
   }
 
   function alive(win) {
@@ -338,11 +351,8 @@ function createEdgeDockController(deps) {
     return SURFACES.find((surface) => alive(windows[surface]) && windows[surface].webContents === sender) || null;
   }
 
-  function cancelFade(win) {
-    const timer = fades.get(win);
-    if (timer) clearInterval(timer);
-    fades.delete(win);
-  }
+  const cardVisibility = createCardWindowVisibility({ reducedMotion: prefersReducedMotion, setOpacity });
+  const { cancel: cancelFade } = cardVisibility;
 
   function setOpacity(win, opacity) {
     win.setOpacity(opacity);
@@ -351,31 +361,6 @@ function createEdgeDockController(deps) {
 
   function reorderBackdrops() {
     for (const backdrop of backdrops.values()) backdrop.reorder();
-  }
-
-  function fade(win, to, duration, done) {
-    if (!alive(win)) return;
-    cancelFade(win);
-    if (prefersReducedMotion() || duration <= 0) {
-      setOpacity(win, to);
-      done?.();
-      return;
-    }
-    const from = win.getOpacity();
-    const steps = Math.max(1, Math.round(duration / FADE_STEP_MS));
-    let step = 0;
-    const timer = setInterval(() => {
-      if (!alive(win)) { cancelFade(win); return; }
-      step += 1;
-      const t = step / steps;
-      const eased = 1 - Math.pow(1 - t, 3);
-      setOpacity(win, from + (to - from) * eased);
-      if (step >= steps) {
-        cancelFade(win);
-        done?.();
-      }
-    }, FADE_STEP_MS);
-    fades.set(win, timer);
   }
 
   // Surfaces are shown once and then only faded and made click-through, never
@@ -392,32 +377,21 @@ function createEdgeDockController(deps) {
     else if (surface === 'rail' && platform === 'darwin') syncRailPointer();
     else if (surface === 'bubble' && platform === 'darwin') syncBubblePointer();
     else win.setIgnoreMouseEvents(ignore);
-    if (!win.isVisible()) {
-      setOpacity(win, 0);
-      win.showInactive();
-      // Reassert native topmost and taskbar exclusion after showInactive. The
-      // floating level can be demoted when Electron moves the HWND behind a
-      // non-topmost taskbar, and the constructor's skipTaskbar call ran while
-      // the HWND was still hidden.
-      if (platform === 'win32') {
+    cardVisibility.setVisible(win, visible, duration, { beforeFade(firstShow) {
+      if (platform === 'win32' && firstShow) {
+        // Reassert stacking after the first non-activating native show.
         win.setSkipTaskbar?.(true);
         win.setAlwaysOnTop(true, 'pop-up-menu');
+      } else if (platform === 'win32' && revealing) {
+        restoreWindowsTopmost(true);
       }
-    } else if (platform === 'win32' && revealing) {
-      // Restoring only the newly revealed card leaves an already-visible rail
-      // behind other windows. Repair the visible Dock together, even when its
-      // HWNDs still report topmost, preserving the card/refresh stacking.
-      restoreWindowsTopmost(true);
-    }
-    // The nested refresh circle overlaps the rail's transparent shoulder, but
-    // macOS still hit-tests that rail rectangle. Keep the action above it,
-    // including when the rail finishes loading after the refresh frame.
-    if (visible && peekMode === 'refresh' && !peekPaintPending
-      && (surface === 'peek' || (surface === 'rail' && refreshVisible))) {
-      windows.peek?.moveTop?.();
-    }
-    if (visible) unpark(surface);
-    fade(win, visible ? 1 : 0, duration, visible ? undefined : () => park(surface));
+      // Keep the nested refresh action above the rail's transparent shoulder.
+      if (visible && peekMode === 'refresh' && !peekPaintPending
+        && (surface === 'peek' || (surface === 'rail' && refreshVisible))) {
+        windows.peek?.moveTop?.();
+      }
+      if (visible) unpark(surface);
+    }, afterFade: visible ? undefined : () => park(surface) });
     if (platform === 'win32') reorderBackdrops();
   }
 
@@ -426,9 +400,7 @@ function createEdgeDockController(deps) {
   }
 
   function parkedBounds(bounds) {
-    let right = -Infinity;
-    for (const { bounds: d } of screen.getAllDisplays?.() || [display()]) right = Math.max(right, d.x + d.width);
-    return { x: right + bounds.width, y: bounds.y, width: bounds.width, height: bounds.height };
+    return parkedCardBounds(bounds, screen.getAllDisplays?.() || [display()]);
   }
 
   // Runs when a fade out finishes; a reveal in the meantime cancels the fade.
@@ -513,17 +485,9 @@ function createEdgeDockController(deps) {
     else win.setIgnoreMouseEvents(!takesPointer);
   }
 
-  function syncBubblePointer() {
-    const win = windows.bubble;
-    if (platform !== 'darwin' || !alive(win)) return;
-    const takesPointer = visibleTargets.bubble && (rectContains(bubbleFrame, screen.getCursorScreenPoint())
-      || bubblePointerMode === 'capture' && primaryButtonDown() === true);
-    const mode = takesPointer ? 'capture' : visibleTargets.bubble ? 'forward' : 'ignore';
-    if (mode === bubblePointerMode) return;
-    bubblePointerMode = mode;
-    if (mode === 'forward') win.setIgnoreMouseEvents(true, { forward: true });
-    else win.setIgnoreMouseEvents(!takesPointer);
-  }
+  const bubblePointer = createCardPointerRouting({ platform, screen, getWindow: () => windows.bubble,
+    getFrame: () => bubbleFrame, isVisible: () => visibleTargets.bubble, primaryButtonDown });
+  function syncBubblePointer() { bubblePointer.sync(); }
 
   function setPointerOnHandle(on) {
     if (on === pointerOnHandle) return;
@@ -597,7 +561,7 @@ function createEdgeDockController(deps) {
     const side = layout()?.side || placement().side;
     const shapedGlass = nativeMaterial[surface] === true && glasses[surface] !== null
       && (surface !== 'peek' || peekMode === 'refresh');
-    const base = { surface, side, platform, osRelease: os.release(), appearance, glass: nativeMaterial[surface] === true, liquidGlass: shapedGlass, shape: shapes[surface], zoom: dockScale() };
+    const base = { surface, side, platform, osRelease: os.release(), appearance, glass: nativeMaterial[surface] === true, liquidGlass: shapedGlass, shape: shapes[surface], zoom: surface === 'bubble' ? bubbleScale() : dockScale() };
     if (surface === 'rail') {
       return {
         ...base,
@@ -617,7 +581,8 @@ function createEdgeDockController(deps) {
         ...base,
         cell: bubbleCell !== null ? cells[bubbleCell] || null : null,
         placed: bubblePlaced,
-        cardWidth: layout()?.bubbleWidth / dockScale(),
+        reveal: bubbleReveal,
+        cardWidth: layout()?.bubbleWidth / bubbleScale(),
         maxCardHeight: maxCardHeight()
       };
     }
@@ -648,7 +613,7 @@ function createEdgeDockController(deps) {
     const macGlass = materialKey === 'mac-glass' && surface !== 'peek';
     nativeMaterial[surface] = macMaterial;
     const win = new BrowserWindow({
-      width: surface === 'bubble' ? metrics().bubbleWidth : metrics().railWidth,
+      width: surface === 'bubble' ? bubbleMetrics().bubbleWidth : metrics().railWidth,
       height: 80,
       show: false,
       frame: false,
@@ -685,7 +650,7 @@ function createEdgeDockController(deps) {
         nodeIntegration: false,
         sandbox: true,
         backgroundThrottling: false,
-        zoomFactor: dockScale()
+        zoomFactor: surface === 'bubble' ? bubbleScale() : dockScale()
       }
     });
     if (win32 || mac) installNonActivatingInput(win);
@@ -706,6 +671,8 @@ function createEdgeDockController(deps) {
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', (event) => event.preventDefault());
     win.webContents.on('did-finish-load', () => {
+      // Shared renderers can retain an opaque canvas despite transparent:true.
+      if (mac) win.setBackgroundColor('#00000000');
       ready[surface] = true;
       lastSent[surface] = '';
       render(surface);
@@ -776,7 +743,7 @@ function createEdgeDockController(deps) {
   function destroyWindows() {
     cancelBubbleMotion();
     bubbleFrame = null;
-    bubblePointerMode = null;
+    bubblePointer.reset();
     cancelRailMotion();
     railHitPolygons = [];
     railPointerMode = null;
@@ -821,7 +788,7 @@ function createEdgeDockController(deps) {
   }
 
   function commandsFor(surface, bounds, side) {
-    const m = metrics();
+    const m = surface === 'bubble' ? bubbleMetrics() : metrics();
     if (surface === 'bubble') {
       const commands = bubbleCommands({
         width: bounds.width,
@@ -832,8 +799,7 @@ function createEdgeDockController(deps) {
         neck: m.bubbleNeck,
         radius: m.bubbleRadius
       });
-      // One stable canvas: translate the silhouette inside it rather than
-      // moving/resizing the native window on every animation frame.
+      // The silhouette and material use the same window-local card coordinates.
       return commands.map(command => command.map((value, index) => index > 0 && index % 2 === 0 ? value + bounds.cardY : value));
     }
     if (surface === 'peek') {
@@ -925,7 +891,7 @@ function createEdgeDockController(deps) {
           win.destroy();
           windows.bubble = createSurface('bubble', builtMaterial);
         }
-        paintBubble(layout().bubble, layout().workArea);
+        paintBubble(layout().bubble);
         return;
       }
       if (surface === 'peek' && shaped !== peekRegionClips) {
@@ -1137,6 +1103,7 @@ function createEdgeDockController(deps) {
   }
 
   function showBubble(cellIndex) {
+    if (!bubbleVisible) bubbleReveal += 1;
     bubbleCell = cellIndex;
     // Reopening the card that was last shown produces the same payload as the
     // one already sent, which the render de-duplication would swallow, and then
@@ -1176,21 +1143,16 @@ function createEdgeDockController(deps) {
     setVisible('bubble', false, FADE_OUT_MS);
   }
 
-  function cancelBubbleMotion({ preserveFrameClock = false } = {}) {
-    const motion = bubbleMotion;
-    clearInterval(bubbleMotionTimer);
-    bubbleMotionTimer = null;
+  const cardFrameDriver = createCardMotionDriver({ platform, advance: advanceBubbleMotion,
+    notify: payload => send('bubble', 'edgeDock:cardMotion', payload) });
+  function cancelBubbleMotion(options) {
+    cardFrameDriver.cancel(options);
     bubbleMotion = null;
-    if (motion) send('bubble', 'edgeDock:cardMotion', { motionId: motion.id, active: false });
-    if (!preserveFrameClock) lastCardFrameAt = null;
   }
 
-  function paintBubble(frame, workArea, target = frame) {
+  function paintBubble(frame, target = frame) {
     bubbleFrame = frame;
-    const canvasY = bubbleShapeFailed ? frame.y : workArea.y;
-    placeSurface('bubble', { x: frame.x, y: canvasY, width: frame.width, height: bubbleShapeFailed ? frame.height : workArea.height,
-      cardY: frame.y - canvasY, cardHeight: frame.height, tailY: frame.tailY,
-      contentY: target.y - canvasY, contentHeight: target.height });
+    placeSurface('bubble', { ...cardCanvasBounds(frame, target), tailY: frame.tailY });
     syncBubblePointer();
   }
 
@@ -1201,7 +1163,7 @@ function createEdgeDockController(deps) {
     // The silhouette and its shared content layer follow one spring.
     // Rapid retargets preserve the outline's velocity.
     advanceCardFrame(motion, elapsed, cardSpring, done);
-    paintBubble(motion.frame, motion.workArea, motion.to);
+    paintBubble(motion.frame, motion.to);
     if (done) cancelBubbleMotion();
   }
 
@@ -1222,25 +1184,12 @@ function createEdgeDockController(deps) {
     // stale-frame grace period beyond the last frame that actually arrived.
     cancelBubbleMotion({ preserveFrameClock: bubbleMotion !== null });
     if (moving) {
-      const motion = { id: ++nextBubbleMotionId, keys, from, to: target, frame: from, initialVelocity: velocity, velocity: {},
+      const motion = { keys, from, to: target, frame: from, initialVelocity: velocity, velocity: {},
         startedAt: Date.now(), workArea: current.workArea };
       bubbleMotion = motion;
-      // Windows rounds a nominal 16ms main-process timeout up to two system
-      // ticks. Let the visible renderer drive paint frames; the main timer
-      // remains a fallback if frame delivery stops.
-      if (platform === 'win32') {
-        send('bubble', 'edgeDock:cardMotion', { motionId: motion.id, active: true });
-      }
-      advanceBubbleMotion(motion);
-      if (bubbleMotion === motion) {
-        bubbleMotionTimer = setInterval(() => {
-          if (platform === 'win32' && lastCardFrameAt !== null
-            && Date.now() - lastCardFrameAt < CARD_FRAME_STALE_MS) return;
-          advanceBubbleMotion(motion);
-        }, FADE_STEP_MS);
-      }
+      cardFrameDriver.start(motion);
     } else {
-      paintBubble(target, current.workArea);
+      paintBubble(target);
     }
     if (!bubbleVisible) {
       bubbleVisible = true;
@@ -1285,7 +1234,8 @@ function createEdgeDockController(deps) {
           showPeek();
           render('rail');
         }
-        const revealed = intent.snapshot().revealed;
+        const { revealed, always, pinned } = intent.snapshot();
+        const trigger = revealed ? current.overshoot : current.trigger;
         const bubbleRect = bubbleVisible ? bubbleFrame : null;
         const inRefresh = refreshVisible && rectContains(current.refresh, point);
         const inRefreshCorridor = refreshVisible && rectContains(edgeDockRefreshCorridor(current.rail, current.refresh), point);
@@ -1297,7 +1247,11 @@ function createEdgeDockController(deps) {
           hideBubble();
         }
         const input = {
-          inTrigger: rectContains(current.trigger, point),
+          // A fixed rail stays open on its own. Its card can dismiss even
+          // when the pointer leaves through the system-reserved edge strip.
+          inTrigger: !always && !pinned
+            && (revealed || settings().edgeDockTriggerRange !== 'handle')
+            && rectContains(trigger, point),
           inPeek: !revealed && rectContains(current.restingHandle, point),
           // Only with the button known to be up: a held one is a scrollbar or a
           // selection being dragged past the handle, not a reach for it, and an
@@ -1409,8 +1363,10 @@ function createEdgeDockController(deps) {
     ipcMain.on('edgeDock:ready', (event) => {
       const surface = surfaceFor(event.sender);
       if (!surface) return;
+      if (platform === 'darwin') windows[surface].setBackgroundColor('#00000000');
       ready[surface] = true;
       render(surface);
+      if (surface === 'bubble') send('bubble', 'edgeDock:limitProbes', limitProbes());
     });
     // Clicks no longer pin the rail: that state had no clear meaning next to
     // the always-visible mode, and its only trace was an unexplained bar. A
@@ -1491,10 +1447,7 @@ function createEdgeDockController(deps) {
       tickDrag(screen.getCursorScreenPoint(), layout());
     });
     ipcMain.on('edgeDock:cardFrame', (event, payload) => {
-      if (platform !== 'win32' || surfaceFor(event.sender) !== 'bubble'
-        || !bubbleMotion || bubbleMotion.id !== payload?.motionId) return;
-      lastCardFrameAt = Date.now();
-      advanceBubbleMotion(bubbleMotion);
+      if (surfaceFor(event.sender) === 'bubble') cardFrameDriver.frame(payload?.motionId);
     });
     ipcMain.on('edgeDock:dragEnd', (event) => {
       if (surfaceFor(event.sender) !== 'rail') return;
@@ -1545,6 +1498,18 @@ function createEdgeDockController(deps) {
       } catch (error) {
         logger(`[edge-dock] codex account switch failed: ${error.message}`);
         return { ok: false, error: error?.message || 'Switch failed' };
+      }
+    });
+    // A quota row's refresh button. The renderer names the row's provider and
+    // account; the main process decides what that may narrow the probe to.
+    ipcMain.removeHandler('edgeDock:refreshLimitAccount');
+    ipcMain.handle('edgeDock:refreshLimitAccount', async (event, payload) => {
+      if (surfaceFor(event.sender) !== 'bubble' || !onRefreshLimitAccount) return { ok: false, error: 'Unknown surface' };
+      try {
+        return await onRefreshLimitAccount(payload?.provider, payload?.account);
+      } catch (error) {
+        logger(`[edge-dock] limits account refresh failed: ${error.message}`);
+        return { ok: false, error: error?.message || 'Refresh failed' };
       }
     });
     // The forecast row on the card is the Limits page's row, link and all. The
@@ -1654,10 +1619,15 @@ function createEdgeDockController(deps) {
   }
 
   return {
+    setLimitProbes(probes) {
+      if (running) send('bubble', 'edgeDock:limitProbes', probes);
+    },
     // Shows a custom size while its slider is dragged; the save that follows
     // the release goes through sync(), which drops the preview.
-    previewScale(scale) {
-      previewScale = scale === null || scale === undefined ? null : normalizeEdgeDockCustomScale(scale);
+    previewScale(scale, surface = 'rail') {
+      const value = scale === null || scale === undefined ? null : normalizeEdgeDockCustomScale(scale);
+      if (surface === 'bubble') previewBubbleScale = value;
+      else previewScale = value;
       if (!running) return;
       positionRail();
       if (!railVisible) showPeek();
@@ -1666,6 +1636,7 @@ function createEdgeDockController(deps) {
     // Settings changed: start, stop, rebuild for a material change, or move.
     sync() {
       previewScale = null;
+      previewBubbleScale = null;
       if (!canUseEdgeDock(settings(), platform)) {
         if (running) stop();
         return;
@@ -1743,6 +1714,7 @@ function createEdgeDockController(deps) {
       for (const surface of SURFACES) render(surface);
     },
     isRunning: () => running,
+    limitsVisible: () => running && (alwaysVisible() || railVisible || bubbleVisible),
     webSurface: (host) => {
       const kind = ['rail', 'bubble'].find(key => windows[key]?.webContents === host);
       return kind ? { kind, visible: running && !drag && visibleTargets[kind] === true && (kind === 'rail' ? railVisible : bubbleVisible) } : null;

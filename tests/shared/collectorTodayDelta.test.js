@@ -234,6 +234,51 @@ test('an all-client fallback refreshes fork-only partitions from the same toksca
   assert.equal(summary.allTime.clients.proma, 7);
 });
 
+for (const missingClientHasUsage of [false, true]) {
+  test(`a missing previously empty target ${missingClientHasUsage ? 'with new usage still needs a full fallback' : 'is checked without scanning unrelated clients'}`, async () => {
+    const { collectUsageOnce, localTodayKey } = freshCollector();
+    const calls = [];
+    const anchor = {
+      dateKey: localTodayKey(),
+      today: combinedPeriod({ codex: 20, proma: 5 }),
+      month: combinedPeriod({ claude: 50, codex: 40, proma: 5 }),
+      allTime: combinedPeriod({ claude: 100, codex: 80, proma: 10 }),
+      todayPartitions: {
+        claude: clientPeriod('claude', 0),
+        codex: clientPeriod('codex', 20),
+        proma: clientPeriod('proma', 5)
+      }
+    };
+    const runTokscale = async ({ clients, flags }) => {
+      assert.deepEqual(flags, ['--today']);
+      calls.push(clients);
+      if (clients === 'claude,codex') return tokscaleRows({ codex: missingClientHasUsage ? 37 : 30 });
+      if (clients === 'claude') return tokscaleRows(missingClientHasUsage ? { claude: 7 } : {});
+      return tokscaleRows(missingClientHasUsage ? { claude: 7, codex: 30, proma: 5 } : { codex: 30, proma: 5 });
+    };
+
+    const summary = await collectUsageOnce({
+      ...baseOptions,
+      clients: 'claude,codex,proma',
+      targetClients: ['claude', 'codex'],
+      todayOnlyAnchor: anchor,
+      runTokscale,
+      historyEnabled: false,
+      projectsEnabled: false
+    });
+
+    const expectedCalls = ['claude,codex', 'claude'];
+    if (missingClientHasUsage) expectedCalls.push('claude,codex,proma');
+    const newClaudeTokens = missingClientHasUsage ? 7 : 0;
+    assert.deepEqual(calls, expectedCalls);
+    assert.deepEqual(summary.today.clients, missingClientHasUsage
+      ? { claude: 7, codex: 30, proma: 5 }
+      : { codex: 30, proma: 5 });
+    assert.deepEqual(summary.month.clients, { claude: 50 + newClaudeTokens, codex: 50, proma: 5 });
+    assert.deepEqual(summary.allTime.clients, { claude: 100 + newClaudeTokens, codex: 90, proma: 10 });
+  });
+}
+
 test('a partial multi-target union falls back instead of trusting a polluted partition', async () => {
   const { collectUsageOnce, localTodayKey } = freshCollector();
   const calls = [];
@@ -432,7 +477,7 @@ test('collectUsageOnce ignores a stale anchor from a previous day and runs the f
   }
 });
 
-test('startCollector: watch ticks reuse the full-scan anchor, manual ticks rescan everything', async () => {
+test('startCollector: watch ticks reuse the full-scan anchor, manual ticks rescan everything', async t => {
   const childProcess = require('node:child_process');
   const originalSpawn = childProcess.spawn;
   const calls = [];
@@ -451,8 +496,10 @@ test('startCollector: watch ticks reuse the full-scan anchor, manual ticks resca
       watchEnabled: false,
       watchDebounceMs: 10,
       historyEnabled: false,
+      pricingCatalogTimers: { setTimeout: () => 1, clearTimeout() {} },
       onUpdate: (summary, reason) => updates.push({ summary, reason })
     });
+    t.after(() => handle.stop());
 
     await waitForUpdates(updates, 1);
     const fullScans = calls.length;
@@ -551,6 +598,40 @@ for (const client of ['codex', 'claude']) test(`${client} anchored effort misses
     for (const name of ['month', 'allTime']) {
       assert.equal(summary[name].sessions[`${client}:s1`].reasoningEffort, expected, `${name}: ${lastUsedAt} ${JSON.stringify(fields)} raw=${rawTimestamp}`);
       assert.equal(archive.sessions[`${client}:s1`].periods[name].reasoningEffort, expected);
+      assert.equal(summary[name].totalTokens, 50);
+    }
+  }
+});
+
+for (const client of ['codex', 'claude']) test(`${client} anchored latest-model misses preserve only the same observation through archive capture`, async () => {
+  const { collectUsageOnce, localTodayKey } = freshCollector();
+  const { emptyPeriod } = require('../../src/shared/usage');
+  const { updateSessionUsageArchive, normalizeSessionUsageArchive } = require('../../src/shared/usage/sessionUsageArchive');
+  const observedAt = new Date().toISOString();
+  const newer = new Date(Date.parse(observedAt) + 1000).toISOString();
+  const older = new Date(Date.parse(observedAt) - 1000).toISOString();
+  const makePeriod = () => ({ ...emptyPeriod(), totalTokens: 50, clients: { [client]: 50 }, sessions: {
+    [`${client}:s1`]: { client, sessionId: 's1', totalTokens: 50, lastUsedAt: observedAt, latestModel: 'older' }
+  } });
+  const cases = [
+    [observedAt, {}, 'older'], [observedAt, { latestModel: null }, null],
+    [observedAt, { latestModel: 'newer' }, 'newer'], [newer, {}, null],
+    [older, {}, 'older'], [older, { latestModel: 'newer' }, 'older']
+  ];
+  for (const rawTimestamp of [false, true]) for (const [lastUsedAt, fields, expected] of cases) {
+    const anchor = { dateKey: localTodayKey(), today: makePeriod(), month: makePeriod(), allTime: makePeriod() };
+    const saved = updateSessionUsageArchive(null, anchor, new Date(observedAt)).archive;
+    const summary = await collectUsageOnce({
+      ...baseOptions, clients: client, todayOnlyAnchor: anchor,
+      runTokscale: async () => ({ entries: [{ client, sessionId: 's1', model: 'fixture', input: 50,
+        ...(rawTimestamp ? { lastUsedAt } : {}) }] }),
+      sessionMetadataDeps: { sessionMetadataResolvers: new Map([[client, () => new Map([['s1', { lastUsedAt, ...fields }]])]]) }
+    });
+    updateSessionUsageArchive(saved, summary, new Date(newer));
+    const archive = normalizeSessionUsageArchive(saved);
+    for (const name of ['month', 'allTime']) {
+      assert.equal(summary[name].sessions[`${client}:s1`].latestModel, expected, `${name}: ${lastUsedAt} ${JSON.stringify(fields)} raw=${rawTimestamp}`);
+      assert.equal(archive.sessions[`${client}:s1`].periods[name].latestModel, expected);
       assert.equal(summary[name].totalTokens, 50);
     }
   }

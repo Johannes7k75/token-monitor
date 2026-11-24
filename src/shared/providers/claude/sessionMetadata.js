@@ -12,6 +12,10 @@ const { normalizeReasoningEffort } = require('../../sessionLive');
 
 const TITLE_MAX_CODE_POINTS = 96;
 const TITLE_READ_CHUNK_BYTES = 256 * 1024;
+// The title scanner runs on every live session and every full scan, so a fresh
+// chunk buffer per read was pure churn: the retained trailing fragments are
+// copies. Reads are synchronous, so one buffer cannot be observed mid-read.
+const TITLE_READ_BUFFER = Buffer.alloc(TITLE_READ_CHUNK_BYTES);
 const MAX_METADATA_LINE_BYTES = 64 * 1024;
 // The turn boundary needs two fields, and on a real transcript they sit at
 // opposite ends of a record: whether a `user` record is a genuine prompt is
@@ -225,6 +229,12 @@ function isUserPrompt(entry) {
   return asked;
 }
 
+function applyLatestModel(state, entry) {
+  if (entry.isSidechain === true || entry.isApiErrorMessage === true) return;
+  const model = entry.message?.model;
+  if (typeof model === 'string' && model.trim() && model !== '<synthetic>') state.latestModel = model;
+}
+
 function applyReasoningEffort(state, entry) {
   if (entry.isSidechain === true || entry.isApiErrorMessage === true) return;
   // A non-null per-turn override describes this response more specifically
@@ -238,7 +248,7 @@ function applyReasoningEffort(state, entry) {
 function assistantMetadataFromTail(tail) {
   // Keep a message-level stop reason when available: complete JSON can still
   // describe a streamed response whose missing configuration supplies no clear.
-  for (const match of tail.matchAll(/"(?:stop_reason|usage)"\s*:/g)) {
+  for (const match of tail.matchAll(/"(?:model|stop_reason|usage)"\s*:/g)) {
     try { return JSON.parse('{"message":{' + tail.slice(match.index)); } catch (_) { /* Not a complete message suffix. */ }
   }
   // Prove a candidate belongs to the root by parsing its complete suffix.
@@ -262,6 +272,7 @@ function applyMetadataLine(state, line) {
       const candidate = cleanTitle(entry.aiTitle);
       if (candidate) state.aiTitle = candidate;
     } else if (entry?.type === 'assistant') {
+      applyLatestModel(state, entry);
       applyReasoningEffort(state, entry);
       // Claude stamps every assistant record with why it stopped. `tool_use`
       // means it paused to run tools and is still mid-turn; anything else
@@ -343,10 +354,10 @@ function scanRange(fd, start, length, state, fsApi) {
   let position = start;
   let remaining = length;
   while (remaining > 0) {
-    const buffer = Buffer.alloc(Math.min(TITLE_READ_CHUNK_BYTES, remaining));
-    const bytesRead = fsApi.readSync(fd, buffer, 0, buffer.length, position);
+    const chunkLength = Math.min(TITLE_READ_CHUNK_BYTES, remaining);
+    const bytesRead = fsApi.readSync(fd, TITLE_READ_BUFFER, 0, chunkLength, position);
     if (bytesRead <= 0) break;
-    consumeMetadataBytes(state, buffer.subarray(0, bytesRead));
+    consumeMetadataBytes(state, TITLE_READ_BUFFER.subarray(0, bytesRead));
     position += bytesRead;
     remaining -= bytesRead;
   }
@@ -445,6 +456,13 @@ function applyLongLineFragments(state, lineTerminated = false) {
     // A complete root prefix can carry configuration even when the tail has
     // no metadata. Missing configuration still supplies no clear on its own.
     if (lineTerminated) {
+      let responseModel = metadata?.message?.model;
+      const contentAt = head.indexOf('"content"');
+      if (!responseModel && contentAt >= 0) {
+        // Parse only the closed message prefix, excluding arbitrary tool content.
+        try { responseModel = JSON.parse(head.slice(0, contentAt).replace(/,\s*$/, '') + '}}').message?.model; } catch (_) { /* Incomplete prefix. */ }
+      }
+      applyLatestModel(state, { ...prefix, ...metadata, message: { model: responseModel } });
       applyReasoningEffort(state, { ...prefix, ...metadata });
     }
     // The usage reading is taken before the stop_reason guard below, matching
@@ -550,6 +568,7 @@ function readSessionTitle(filePath, deps = {}) {
         aiTitle: cached.aiTitle || '',
         stopReason: cached.stopReason || '',
         userSinceStop: cached.userSinceStop === true,
+        ...(Object.hasOwn(cached, 'latestModel') ? { latestModel: cached.latestModel } : {}),
         ...(Object.hasOwn(cached, 'reasoningEffort') ? { reasoningEffort: cached.reasoningEffort } : {}),
         trailing: Buffer.isBuffer(cached.trailing) ? Buffer.from(cached.trailing) : Buffer.alloc(0),
         droppingLongLine: cached.droppingLongLine === true,
@@ -731,6 +750,7 @@ function resolveSessionMetadata(sessionIds, context) {
       ? normalizeSessionContext(index) || { contextTokens: 0, contextWindow: 0 } : undefined;
     result.set(sessionId, {
       ...meta,
+      ...(index && Object.hasOwn(index, 'latestModel') ? { latestModel: index.latestModel } : {}),
       ...(index && Object.hasOwn(index, 'reasoningEffort') ? { reasoningEffort: index.reasoningEffort } : {}),
       ...(index?.promptCacheState?.observation === undefined ? {}
         : { promptCache: index.promptCacheState.observation }),

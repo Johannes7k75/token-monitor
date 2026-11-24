@@ -1,14 +1,14 @@
 'use strict';
 
 const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
+const { execFile, execFileSync } = require('node:child_process');
 const { throwIfAborted } = require('./abortSignal');
 const { emptyPeriod, extractUsageFromTokscale, mergePeriods } = require('./usage');
 const { REASONIX_CLIENT } = require('./providers/reasonix/paths');
 const { WSL_DATA_MARKERS, MARKER_CLIENTS } = require('./clientSourceRegistration');
 const { isMcodeProfileDir } = require('./providers/mcode/paths');
 
-const WSL_EXCLUDED_CLIENTS = new Set([REASONIX_CLIENT, 'catpaw', 'qodercn']);
+const WSL_EXCLUDED_CLIENTS = new Set([REASONIX_CLIENT, 'catpaw']);
 
 const LXSS_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss';
 
@@ -128,7 +128,7 @@ function probeWslState(deps = {}) {
 }
 
 async function collectWslUsage(options = {}, deps = {}) {
-  const { clients, trackedClients = clients, allTimeSince, commandTimeoutMs, runTokscale, logger, decoratePeriods } = options;
+  const { clients, trackedClients = clients, allTimeSince, commandTimeoutMs, allTimeTimeoutMs = commandTimeoutMs, runTokscale, logger, decoratePeriods } = options;
   const existsSync = deps.existsSync || fs.existsSync;
   const readdirSync = deps.readdirSync || fs.readdirSync;
   const bundle = emptyWslBundle();
@@ -140,9 +140,7 @@ async function collectWslUsage(options = {}, deps = {}) {
   // Reasonix aggregate usage is supported on the host, but remains excluded
   // from WSL scans: Tokscale's Windows PathRoot::ReasonixHome conflicts with
   // the Linux-default `.reasonix/stats` path inside WSL. Native session files
-  // are local-only as well. Qoder CN is excluded for the same kind of reason:
-  // under a Windows host the fork resolves its legacy database from the host's
-  // APPDATA rather than from --home, so a WSL scan would recount host usage.
+  // are local-only as well.
   const tracked = new Set(String(trackedClients).split(',').map((c) => c.trim()).filter(Boolean));
   const clientsCsv = String(clients || '').split(',').map((c) => c.trim()).filter(Boolean)
     .filter((client) => !WSL_EXCLUDED_CLIENTS.has(client))
@@ -164,7 +162,7 @@ async function collectWslUsage(options = {}, deps = {}) {
       throwIfAborted(options.signal, 'WSL usage scan aborted');
       const monthJson = await runTokscale({ clients: clientsCsv, flags: ['--month', '--home', home], commandTimeoutMs, signal: options.signal });
       throwIfAborted(options.signal, 'WSL usage scan aborted');
-      const allTimeJson = await runTokscale({ clients: clientsCsv, flags: ['--since', allTimeSince, '--home', home], commandTimeoutMs, signal: options.signal });
+      const allTimeJson = await runTokscale({ clients: clientsCsv, flags: ['--since', allTimeSince, '--home', home], commandTimeoutMs: allTimeTimeoutMs, signal: options.signal });
       throwIfAborted(options.signal, 'WSL usage scan aborted');
       const periods = {
         today: extractUsageFromTokscale(todayJson),
@@ -183,10 +181,102 @@ async function collectWslUsage(options = {}, deps = {}) {
   return { bundle, detected: [...detected] };
 }
 
+function defaultExecAsync(cmd, args) {
+  const isWsl = /wsl(\.exe)?$/i.test(cmd);
+  return new Promise((resolve, reject) => {
+    const child = execFile(cmd, args, {
+      timeout: 5000,
+      windowsHide: true,
+      encoding: 'buffer'
+    }, (error, stdout) => {
+      if (error) reject(error);
+      else resolve(Buffer.from(stdout).toString(isWsl ? 'utf16le' : 'utf8'));
+    });
+    child.stdin?.end();
+  });
+}
+
+async function pathExistsAsync(target) {
+  try {
+    await fs.promises.access(target);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function detectWslClientsAsync(deps = {}) {
+  const platform = deps.platform || process.platform;
+  if (platform !== 'win32') return [];
+  const target = deps.clients ? new Set([...deps.clients].map((c) => String(c || '').trim().toLowerCase()).filter(Boolean)) : null;
+  if (target && target.size === 0) return [];
+  const exec = deps.exec || defaultExecAsync;
+  const exists = deps.exists || pathExistsAsync;
+  const readdir = deps.readdir || fs.promises.readdir;
+  try {
+    await exec('reg', ['query', LXSS_KEY]);
+  } catch (_) {
+    return [];
+  }
+  let out;
+  try {
+    out = await exec('wsl.exe', ['--list', '--quiet', '--running']);
+  } catch (_) {
+    return [];
+  }
+  const distros = String(out)
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\u0000/g, '').trim())
+    .filter(Boolean);
+  const ids = new Set();
+  const wants = (client) => Boolean(client) && !ids.has(client) && (!target || target.has(client));
+  for (const distro of distros) {
+    const candidates = [];
+    const homeRoot = `\\\\wsl$\\${distro}\\home`;
+    try {
+      for (const user of await readdir(homeRoot)) {
+        candidates.push(`${homeRoot}\\${user}`);
+      }
+    } catch (_) { /* distro has no /home or it is unreadable */ }
+    candidates.push(`\\\\wsl$\\${distro}\\root`);
+    for (const home of candidates) {
+      for (const rel of WSL_DATA_MARKERS) {
+        const client = MARKER_CLIENTS[rel];
+        if (!wants(client)) continue;
+        if (await exists(wslHomePath(home, rel))) ids.add(client);
+      }
+      if (wants('copilot')) {
+        const workspaceRoot = wslHomePath(home, '.config/Code/User/workspaceStorage');
+        try {
+          for (const workspace of await readdir(workspaceRoot)) {
+            if (await exists(`${workspaceRoot}\\${workspace}\\chatSessions`)) {
+              ids.add('copilot');
+              break;
+            }
+          }
+        } catch (_) { /* workspaceStorage missing or unreadable */ }
+      }
+      if (wants('mcode')) {
+        try {
+          for (const name of await readdir(home)) {
+            if (isMcodeProfileDir(name) && await exists(wslHomePath(home, `${name}/v2/sessions`))) {
+              ids.add('mcode');
+              break;
+            }
+          }
+        } catch (_) { /* home unreadable */ }
+      }
+      if (target && ids.size === target.size) return [...ids];
+    }
+  }
+  return [...ids];
+}
+
 module.exports = {
   WSL_DATA_MARKERS,
   MARKER_CLIENTS,
   collectWslUsage,
+  detectWslClientsAsync,
   emptyWslBundle,
   homeHasData,
   isWslInstalled,

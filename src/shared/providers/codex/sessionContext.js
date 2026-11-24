@@ -28,6 +28,10 @@ const TAIL_READ_BUDGETS = [256 * 1024, 1024 * 1024];
 const TURN_READ_MAX_BYTES = 8 * 1024 * 1024;
 const MAX_METADATA_LINE_BYTES = 64 * 1024;
 const MAX_PENDING_INPUT_CALLS = 32;
+// Append-only reads run for every active rollout on every watch tick. The
+// consumed bytes are never retained (trailing state is copied), so one shared
+// 256 KiB chunk avoids a constant buffer stream in the usage worker.
+const APPEND_READ_BUFFER = Buffer.alloc(TAIL_READ_BUDGETS[0]);
 const stateCache = new Map();
 
 function contextFromInfo(info) {
@@ -42,8 +46,14 @@ function contextFromInfo(info) {
 function applyLine(state, line, position, contextStart) {
   // An unreadable new configuration cannot leave the previous turn's badge.
   // Only inspect the bounded record prefix; never decode large tool output.
-  const configuration = /"type"\s*:\s*"turn_context"/.test(line.subarray(0, 512).toString('utf8'));
+  const prefix = line.subarray(0, 512).toString('utf8');
+  const configuration = /"type"\s*:\s*"turn_context"/.test(prefix);
   if (configuration && position >= contextStart) state.reasoningEffort = null;
+  // Codex writes type first or after timestamp and an optional root ordinal:
+  // a bounded-out configuration invalidates the model; nested tool data cannot.
+  if (position >= contextStart && /^\s*\{\s*(?:"timestamp"\s*:\s*"(?:\\.|[^"\\])*"\s*,\s*)?(?:"ordinal"\s*:\s*(?:0|[1-9]\d*)\s*,\s*)?"type"\s*:\s*"turn_context"\s*[,}]/.test(prefix)) {
+    state.latestModel = null;
+  }
   // Metadata records are small; never decode arbitrarily large tool output.
   if (!line.length || line.length > MAX_METADATA_LINE_BYTES) return;
   let entry;
@@ -51,6 +61,7 @@ function applyLine(state, line, position, contextStart) {
   if (!entry || typeof entry !== 'object') return;
   const payload = entry.payload && typeof entry.payload === 'object' ? entry.payload : entry;
   if (entry.type === 'turn_context' && position >= contextStart) {
+    state.latestModel = typeof payload.model === 'string' ? payload.model : null;
     state.reasoningEffort = normalizeReasoningEffort(
       Object.prototype.hasOwnProperty.call(payload, 'effort') ? payload.effort : payload.reasoning_effort
     );
@@ -155,10 +166,9 @@ function readCodexSessionState(filePath, deps = {}) {
     if (appendOnly) {
       while (position < stat.size) {
         const length = Math.min(TAIL_READ_BUDGETS[0], stat.size - position);
-        const bytes = Buffer.alloc(length);
-        const read = fsApi.readSync(fd, bytes, 0, length, position);
+        const read = fsApi.readSync(fd, APPEND_READ_BUFFER, 0, length, position);
         if (read !== length) throw new Error('Incomplete transcript read');
-        consumeBytes(state, bytes, position, contextStart);
+        consumeBytes(state, APPEND_READ_BUFFER.subarray(0, read), position, contextStart);
         position += length;
       }
     } else {

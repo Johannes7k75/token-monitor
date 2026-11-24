@@ -50,7 +50,7 @@ test('Home drag preserves inactive plugin placement and hidden slot through re-e
  assert.deepEqual(value.split(',').filter(id=>id!==token),reordered);
  const keyboard=prefs.moveHomeModuleOrder(original,builtins,'model','up');assert.ok(keyboard.includes(token));
 
- const globalDrag=c.createMainPreferenceRowDrag({kind:'view',settingKey:'viewDisplayOrder'});
+ const globalDrag=c.createMainPreferenceRowDrag({kind:'statusProvider',settingKey:'serviceProviderDisplayOrder'});
  assert.equal(globalDrag.mirrorOrder(['device','model']),'device,model');
 });
 
@@ -60,7 +60,7 @@ test('composer names plugin entries and keeps remove/reorder without quota contr
  const dockRoot=document.createElement('div');document.body.append(dockRoot);
  const dockState={settings:{edgeDockItems:[{type:'plugin',ref:'system-monitor/cpu'},{type:'plugin',ref:'system-monitor/memory'}]},stats:{limits:{providers:[]}},pluginCatalog:{plugins:[{status:'active',views:[{ref:'system-monitor/cpu',title:'CPU'},{ref:'system-monitor/memory',title:'Memory'}]}]}};
  const dockSaves=[];let drag;
- const dc=scope(['createDockItemsComposer'],{window:{TokenMonitorEdgeDockComposer:req('src/electron/renderer/edgeDock/composer.js'),TokenMonitorEdgeDockItems:itemsApi,TokenMonitorEdgeDockPresentation:{},TokenMonitorLimitProviders:req('src/shared/limits/providers.js')},state:dockState,t,saveSettings(patch){dockSaves.push(JSON.parse(JSON.stringify(patch)));dockState.settings={...dockState.settings,edgeDockItems:itemsApi.normalizeEdgeDockItems(patch.edgeDockItems)};},limitProviderColor:()=> '#fff',limitMarksWithIcon:new Set(),mimoProductLabel:()=>'',rowDragControllerApi:{createRowDragController:config=>{drag=config;return {deferRender:()=>false};}},verticalDragSortApi:{},preserveSettingsPanelScroll(){}});
+ const dc=scope(['createDockItemsComposer'],{document,window:{TokenMonitorEdgeDockComposer:req('src/electron/renderer/edgeDock/composer.js'),TokenMonitorEdgeDockItems:itemsApi,TokenMonitorEdgeDockPresentation:{},TokenMonitorLimitProviders:req('src/shared/limits/providers.js'),TokenMonitorPluginViews:{navigationIcon:()=>document.createElement('span')}},state:dockState,pluginLimitMetadata:()=>null,desktopSurfaceStats:()=>dockState.stats,desktopLimitProviders:()=>[],pendingSettingsPatches:new Set(),t,saveSettings(patch){dockSaves.push(JSON.parse(JSON.stringify(patch)));dockState.settings={...dockState.settings,edgeDockItems:itemsApi.normalizeEdgeDockItems(patch.edgeDockItems)};},limitProviderColor:()=> '#fff',limitMarksWithIcon:new Set(),mimoProductLabel:()=>'',limitAccountTitle:()=>'',rowDragControllerApi:{createRowDragController:config=>{drag=config;return {deferRender:()=>false};}},verticalDragSortApi:{},preserveSettingsPanelScroll(){}});
  const composer=dc.createDockItemsComposer(dockRoot,'edgeDockItems');composer.render();
  const labels=dockRoot.querySelectorAll('.edge-dock-composer-item').map(n=>({id:n.dataset.itemId,ariaLabel:n.getAttribute('aria-label'),text:n.textContent}));
  assert.equal(labels.length,2);assert.deepEqual(labels.map(x=>x.ariaLabel),['CPU','Memory']);
@@ -75,10 +75,15 @@ test('composer names plugin entries and keeps remove/reorder without quota contr
  assert.deepEqual(dockState.settings.edgeDockItems.map(x=>x.ref),['system-monitor/memory','system-monitor/cpu']);
  dockRoot.querySelector('.edge-dock-composer-remove').fire('click');
  assert.deepEqual(dockState.settings.edgeDockItems,[{type:'plugin',ref:'system-monitor/memory'}]);
+ const savedCatalog=structuredClone(dockState.pluginCatalog),retained=JSON.stringify(dockState.settings.edgeDockItems);
  dockState.pluginCatalog.plugins[0].status='disabled';composer.render();
- assert.equal(dockRoot.querySelector('.edge-dock-composer-item').getAttribute('aria-label'),'Memory');
+ assert.equal(dockRoot.querySelector('.edge-dock-composer-item'),null);
+ assert.equal(JSON.stringify(dockState.settings.edgeDockItems),retained);
  dockState.pluginCatalog={plugins:[]};composer.render();
- assert.equal(dockRoot.querySelector('.edge-dock-composer-item').getAttribute('aria-label'),'system-monitor/memory');
+ assert.equal(dockRoot.querySelector('.edge-dock-composer-item'),null);
+ assert.equal(JSON.stringify(dockState.settings.edgeDockItems),retained);
+ dockState.pluginCatalog=savedCatalog;composer.render();
+ assert.equal(dockRoot.querySelector('.edge-dock-composer-item').getAttribute('aria-label'),'Memory');
 });
 
 test('Notch choices exclude inactive plugins without removing native pages', () => {
@@ -87,4 +92,20 @@ test('Notch choices exclude inactive plugins without removing native pages', () 
  req('src/electron/renderer/notch/pageSettings.js').render({document:d,container,settings:{},catalog,t,save:async()=>{},place:async()=>{},onError:e=>{throw e;}});
  const chips=container.querySelectorAll('.notch-page-chip');
  assert.equal(chips.length,6);assert.equal(chips.some(n=>n.dataset.page==='plugin:idle/main'),false);
+});
+
+test('settings limit list leads plugin rows with their manifest mark, not an initial', () => {
+ const d=makeDoc(), marks=[];
+ const modules={'plugin:pass:plan':{id:'plugin:pass:plan',label:'Pass',presentation:{icon:{data:'data:image/svg+xml;base64,PHN2Zy8+',mode:'mask'}}},'plugin:bare:plan':{id:'plugin:bare:plan',label:'Bare',presentation:{}}};
+ const c=scope(['settingsListIcon'],{document:d,window:{TokenMonitorPluginViews:{navigationIcon:(doc,view,size)=>{const n=doc.createElement('span');n.style.width=`${size}px`;n.style.height=`${size}px`;marks.push(view);return n;}}},pluginLimitMetadata:id=>modules[id]||null});
+ const plugin=c.settingsListIcon('plugin:pass:plan','Pass',new Set(['codex']),'limit-icon');
+ assert.equal(plugin.className,'settings-list-icon settings-list-plugin-icon');
+ assert.equal(plugin.textContent||'','');
+ assert.equal(marks[0],modules['plugin:pass:plan']);
+ assert.equal(plugin.children[0].style.width,'100%');
+ const bare=c.settingsListIcon('plugin:bare:plan','Bare',new Set(['codex']),'limit-icon');
+ assert.equal(bare.className,'settings-list-icon settings-list-icon-fallback');
+ assert.equal(bare.textContent,'B');
+ assert.equal(c.settingsListIcon('codex','Codex',new Set(['codex']),'limit-icon').className,'settings-list-icon ink-icon row-icon-codex limit-icon');
+ assert.equal(marks.length,1);
 });

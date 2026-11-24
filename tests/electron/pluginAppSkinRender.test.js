@@ -14,19 +14,31 @@ function extract(name) {
   return match[0];
 }
 function catalogHarness() {
-  const calls = [];
-  const context = { state: {}, pluginPageDesigns: {}, isSettingsSurfaceVisible: () => true,
-    preserveSettingsPanelScroll: fn => fn() };
-  for (const name of ['render', 'renderViewSwitcher', 'renderThemePresetChips', 'renderNotchPageChoices', 'renderViewPreferences']) context[name] = () => calls.push(name);
+  const calls = [], connectionRefreshes = [];
+  const context = { state: {}, pluginLimitSettings: null, pluginPageDesigns: {}, isSettingsSurfaceVisible: () => true,
+    preserveSettingsPanelScroll: fn => fn(), refreshPluginLimitCredentialStatuses: () => connectionRefreshes.push(context.state.pluginCatalog) };
+  for (const name of ['renderLimits', 'renderLimitProviderCheckboxes', 'render', 'renderViewSwitcher', 'renderThemePresetChips', 'renderNotchPageChoices', 'renderViewPreferences', 'syncPluginLimitsDemand', 'deliverTrayProviderIcons', 'renderHomeIfVisible', 'renderFloatingBubbleContent', 'maybeUpdateBarsIcon']) context[name] = () => calls.push(name);
   vm.createContext(context);
-  vm.runInContext(`let pluginCatalogKey = ''; ${extract('applyPluginCatalog')}`, context);
-  return { calls, context, apply: context.applyPluginCatalog };
+  vm.runInContext(`let pluginCatalogKey = '', pluginLimitReadingsKey = ''; ${extract('applyPluginCatalog')}`, context);
+  return { calls, connectionRefreshes, context, apply: context.applyPluginCatalog };
 }
 const catalog = () => ({ enabled: true, plugins: [{ id: 'test', name: 'Design', status: 'active', revision: 1,
   views: [{ ref: 'test/card', title: 'Card', surfaces: ['home', 'page'], placements: { page: true } }],
   skins: [{ id: 'blue', name: 'Blue', colors: { accent: '#123456' } }],
   webDocuments: [{ ref: 'test/models', title: 'Models', target: 'models', slot: 'replace', height: 240 }],
   runtime: { cpuPercent: 1, memoryMB: 12 }, logs: [] }] });
+test('quota readings refresh Limits and settings without rebuilding catalog UI', () => {
+  const h = catalogHarness(), first = catalog();
+  first.limits = { modules: [{id:'plugin:test:quota'}], providers: [{provider:'plugin:test:quota',updatedAt:'2026-01-01'}] };
+  h.context.state.breakdown = 'limits'; h.apply(first); h.calls.length = 0;
+  const next = structuredClone(first); next.limits.providers[0].updatedAt = '2026-01-02';
+  h.apply(next);
+  assert.deepEqual(h.calls, ['renderLimits', 'renderHomeIfVisible', 'renderFloatingBubbleContent', 'maybeUpdateBarsIcon', 'renderLimitProviderCheckboxes']);
+  assert.equal(h.context.state.pluginCatalog, next);
+  h.calls.length = 0; h.apply(structuredClone(next)); assert.deepEqual(h.calls, []);
+  h.context.state.breakdown = 'home'; next.limits.providers[0].updatedAt = '2026-01-03'; h.apply(next);
+  assert.deepEqual(h.calls, ['renderHomeIfVisible', 'renderFloatingBubbleContent', 'maybeUpdateBarsIcon', 'renderLimitProviderCheckboxes']);
+});
 test('identical and metric-only catalogs update state without any app redraw', () => {
   const h = catalogHarness(); h.apply(catalog()); h.calls.length = 0;
   h.apply(catalog());
@@ -34,6 +46,8 @@ test('identical and metric-only catalogs update state without any app redraw', (
   h.apply(next);
   assert.equal(h.context.state.pluginCatalog, next);
   assert.deepEqual(h.calls, []);
+  assert.equal(h.connectionRefreshes.length, 3, 'connection completion can refresh status without changing the catalog key');
+  assert.equal(h.connectionRefreshes.at(-1), next);
 });
 for (const [label, mutate] of [
   ['code revision', p => p.revision++],
@@ -60,7 +74,7 @@ function preloadBridge() {
 function skinHarness(fail = false) {
   const saved = [], errors = [];
   const state = { settings: { themeColors: { chart: '#112233' }, vendorColors: { existing: '#445566' } } };
-  const context = { state, themePresetsApi, pluginBridge: preloadBridge(),
+  const context = { state, themePresetsApi, pluginBridge: preloadBridge(), queueAppearanceColorChange: write => write(),
     applyThemeColors() {}, applyVendorColorOverrides() {}, buildAppearanceColorControls() {}, renderSettingsSummaries() {},
     t: (_key, values) => values?.error || _key, setStatus: (...args) => errors.push(args),
     saveSettings: async patch => { if (fail) throw new Error('disk full'); saved.push(JSON.parse(JSON.stringify(patch))); Object.assign(state.settings, patch); } };
@@ -80,6 +94,18 @@ test('plugin-details skin callback returns persistence failure to its owning pan
   await assert.rejects(result, /disk full/);
   assert.deepEqual(h.errors, [], 'the panel owns feedback, not the global status');
 });
+test('Plugins settings waits for earlier appearance color writes before applying a skin', async () => {
+  const h = skinHarness();
+  let release;
+  const earlierWrite = new Promise(resolve => { release = resolve; });
+  h.context.queueAppearanceColorChange = write => earlierWrite.then(write);
+  const callback = source.match(/onApplySkin: ([^\n]*applyPluginSkin[^\n]*),/)[1];
+  const result = vm.runInContext(`(${callback})({ref:'author/mono'})`, h.context);
+  assert.deepEqual(h.saved, []);
+  release();
+  await result;
+  assert.deepEqual(h.saved, [{ pluginSkinRef: 'author/mono' }]);
+});
 test('real Appearance skin click handles rejection locally without an unhandled promise', () => {
   const entrypoint = source.match(/chip\.addEventListener\('click', ([^\n]*applyAppearancePluginSkin[^\n]*)\);/)[1];
   const script = `const vm = require('node:vm'), assert = require('node:assert/strict');
@@ -88,7 +114,7 @@ test('real Appearance skin click handles rejection locally without an unhandled 
     const container = document.createElement('div'), chip = document.createElement('button'); container.append(chip);
     const errors = [], ctx = {document, state:{settingsPushRevision:0}, chip, els:{themePresetChips:container}, skin:{ref:'author/mono'},
       window:{TokenMonitorPluginSettings:require(${JSON.stringify(path.join(root, 'src/electron/renderer/pluginSettings'))})},
-      buildAppearanceColorControls() {}, renderSettingsSummaries() {},
+      buildAppearanceColorControls() {}, renderSettingsSummaries() {}, queueAppearanceColorChange: write => write(),
       saveSettings: async () => { throw Error('disk full'); },
       t: (_key, values) => values?.error || _key, setStatus: (...args) => errors.push(args)
     };
@@ -117,7 +143,7 @@ for (const scenario of ['rollback rebuild', 'removed skin', 'changed skin', 'new
     const other = document.createElement('button'); document.body.append(other);
     const state = { settings: {}, settingsPushRevision: 0, pluginCatalog: { plugins: [{ status: 'active', name: 'Author', skins: [skin] }] } };
     let rebuilds = 0;
-    const ctx = { document, state, els: { themePresetChips: container }, themePresetsApi,
+    const ctx = { document, state, els: { themePresetChips: container }, themePresetsApi, queueAppearanceColorChange: write => write(),
       pendingSettingsPatches: new Set(), appearancePreview: {}, syncContentForm: null,
       setSyncContentEditError() {}, console: { error() {} }, applyEffectiveCurrencyRates() {},
       preserveSettingsPanelScroll: fn => fn(), isSettingsSurfaceVisible: () => true,
@@ -164,7 +190,7 @@ test('built-in themes and reset clear author tokens atomically; individual color
   assert.deepEqual(h.saved[1], { themeColors: {}, pluginSkinRef: null });
   await h.context.commitThemeColors({ accent: '#123456' });
   assert.deepEqual(h.saved[2], { themeColors: { accent: '#123456' } });
-  assert.match(source, /resetThemeColorsButton\?\.addEventListener\('click', \(\) => commitThemeColors\(\{\}, true\)\)/);
+  assert.match(source, /resetThemeColorsButton\?\.addEventListener\('click', \(\) => queueAppearanceColorChange\(\(\) => commitThemeColors\(\{\}, true\)\)\)/);
 });
 test('theme selection uses author identity and has no separate clear button', () => {
   const { Element } = require('../helpers/notchPanel');

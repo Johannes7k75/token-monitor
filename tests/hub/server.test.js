@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 
 const { createHub, resolveBindHost } = require('../../src/hub/server');
+const { MAX_JSON_BODY_BYTES } = require('../../src/shared/http');
 const { codexAccountKey } = require('../../src/shared/providers/codex/auth');
 
 function waitFor(predicate, timeoutMs = 1000) {
@@ -149,9 +150,9 @@ test('ingest, devices, and history share the same header gate', async () => {
   }
 });
 
-test('health exposes the Node Hub build identity without authentication', async () => {
+test('health exposes the Node Hub build identity and App deployment without authentication', async () => {
   const dataFile = tempDataFile();
-  const hub = createHub({ port: 0, host: '127.0.0.1', secret: 'shh', dataFile, logger: { error() {}, warn() {} } });
+  const hub = createHub({ port: 0, host: '127.0.0.1', deployment: 'app', secret: 'shh', dataFile, logger: { error() {}, warn() {} } });
   await hub.start();
   try {
     const { port } = hub.server.address();
@@ -159,6 +160,7 @@ test('health exposes the Node Hub build identity without authentication', async 
     const health = await response.json();
     assert.equal(response.status, 200);
     assert.equal(health.runtime, 'node-hub');
+    assert.equal(health.deployment, 'app');
     assert.equal(health.hubBuild.runtime, 'node-hub');
     assert.match(health.hubBuild.coreBuildId, /^sha256:[a-f0-9]{64}$/);
     assert.match(health.hubBuild.runtimeBuildId, /^sha256:[a-f0-9]{64}$/);
@@ -342,7 +344,7 @@ test('oversized ingest returns 413 without storing the device', async () => {
     const response = await fetch(`http://127.0.0.1:${port}/api/ingest`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ deviceId: 'oversized', padding: '🚀'.repeat(270_000) })
+      body: JSON.stringify({ deviceId: 'oversized', padding: '🚀'.repeat(Math.ceil((MAX_JSON_BODY_BYTES + 1) / 4)) })
     });
 
     assert.equal(response.status, 413);
@@ -559,17 +561,17 @@ test('a currency the app carries no rate for is refused, not rewritten', async (
       headers: { 'content-type': 'application/json', authorization: 'Bearer shh' },
       body: JSON.stringify(body)
     });
-    // Coercing EUR to USD reports an amount the user never entered, and the
+    // Coercing ZAR to USD reports an amount the user never entered, and the
     // endpoint documents this as validation.
     const refused = await put({
-      subscriptions: [{ id: 'a', provider: 'codex', startDate: '2026-05-31', amountMinor: 10000, currency: 'EUR' }],
+      subscriptions: [{ id: 'a', provider: 'codex', startDate: '2026-05-31', amountMinor: 10000, currency: 'ZAR' }],
       baseUpdatedAt: ''
     });
     assert.equal(refused.status, 400);
-    assert.match((await refused.json()).message, /EUR/);
+    assert.match((await refused.json()).message, /ZAR/);
     assert.deepEqual(hub.getSubscriptions().subscriptions, []);
 
-    for (const code of ['USD', 'TWD', 'HKD', 'CNY']) {
+    for (const code of ['USD', 'AUD', 'BRL', 'CAD', 'CHF', 'CNY', 'EUR', 'GBP', 'HKD', 'INR', 'JPY', 'KRW', 'SGD', 'TWD']) {
       const ok = await put({
         subscriptions: [{ id: 'a', provider: 'codex', startDate: '2026-05-31', currency: code }],
         baseUpdatedAt: hub.getSubscriptions().updatedAt

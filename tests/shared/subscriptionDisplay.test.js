@@ -261,6 +261,16 @@ test('matchProviderAccount falls back to email when the key rotated', () => {
   assert.equal(matchProviderAccount(sub, providers).accountKey, 'sha256:new');
 });
 
+test('Devin subscriptions follow the organization when a login shares multiple orgs and a token rotates', () => {
+  const alpha = { provider: 'devin', accountName: 'org_alpha', accountKey: 'sha256:old', accountEmail: 'same@example.com' };
+  const beta = { ...alpha, accountName: 'org_beta', accountKey: 'sha256:beta' };
+  const rotatedAlpha = { ...alpha, accountKey: 'sha256:new' };
+  const sub = subscription({ provider: 'devin', binding: bindingFromAccount(alpha) });
+
+  assert.equal(matchProviderAccount(sub, [beta, rotatedAlpha]), rotatedAlpha);
+  assert.equal(matchProviderAccount(sub, [beta]), null);
+});
+
 // The self-healing case: qoder hashes the cookie, so re-pasting an expired one
 // changes accountKey. With a single account there is no ambiguity to resolve.
 test('matchProviderAccount claims the sole account when every candidate misses', () => {
@@ -564,9 +574,9 @@ test('two writes in the same millisecond cannot share a concurrency token', () =
 test('a currency with no exchange rate is not silently reinterpreted as USD', () => {
   const currencyApi = require('../../src/shared/currency');
   // The hubs validate against the same set the app can actually convert; storing
-  // EUR and later valuing it as USD would misreport the recorded cost.
+  // ZAR and later valuing it as USD would misreport the recorded cost.
   const stored = subscriptions.subscriptionDocument(
-    [{ id: 'a', provider: 'codex', startDate: '2026-05-31', amountMinor: 1000, currency: 'EUR' }],
+    [{ id: 'a', provider: 'codex', startDate: '2026-05-31', amountMinor: 1000, currency: 'ZAR' }],
     { currencyApi }
   );
   assert.equal(stored.subscriptions[0].currency, 'USD');

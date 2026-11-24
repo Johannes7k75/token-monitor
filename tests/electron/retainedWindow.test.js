@@ -41,6 +41,96 @@ test('hidden restores retain the viewport until show and obsolete owners cannot 
   assert.match(scripts[1], /"releaseSnapshot":true/);
 });
 
+test('each show stays transparent until the retained page paints, and a stale paint cannot reveal a newer show', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  const reveals = [];
+  const win = f.create({ width: 400, height: 600, show: true }, undefined, {
+    beforeReveal: host => reveals.push([host, host.opacities.length])
+  });
+  const paints = [];
+  win.webContents.executeJavaScript = script => {
+    assert.match(script, /visibilityState/);
+    return new Promise(resolve => paints.push(resolve));
+  };
+  win.emit('show');
+  assert.deepEqual(win.opacities, [0]);
+  win.emit('show');
+  assert.equal(paints.length, 1, 'show() on a shown host must not hide it again');
+  win.emit('hide');
+  win.emit('show');
+  paints[0]();
+  await Promise.resolve();
+  assert.deepEqual(win.opacities, [0, 0, 0], 'the first show resolved after a newer show began');
+  paints[1]();
+  await Promise.resolve();
+  assert.deepEqual(win.opacities, [0, 0, 0, 1]);
+  assert.deepEqual(reveals, [[win, 3]], 'beforeReveal runs once, for the live reveal, before the host turns opaque');
+  t.mock.timers.tick(1000);
+  assert.deepEqual(win.opacities, [0, 0, 0, 1], 'a completed reveal clears its fallback');
+  win.emit('hide');
+  win.emit('show');
+  win.emit('hide');
+  paints[2]();
+  await Promise.resolve();
+  t.mock.timers.tick(1000);
+  assert.deepEqual(win.opacities, [0, 0, 0, 1, 0, 0, 0], 'hiding stays transparent and cancels a pending reveal');
+});
+
+test('a show whose page never paints is revealed by the fallback, and obsolete hosts are left alone', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture();
+  let reveals = 0;
+  const old = f.create({ width: 400, height: 600, show: true }, undefined, { beforeReveal: () => reveals++ });
+  let paint;
+  old.webContents.executeJavaScript = () => new Promise(resolve => { paint = resolve; });
+  old.emit('show');
+  t.mock.timers.tick(999);
+  assert.deepEqual(old.opacities, [0]);
+  t.mock.timers.tick(1);
+  assert.deepEqual(old.opacities, [0, 1]);
+  paint();
+  await Promise.resolve();
+  assert.deepEqual(old.opacities, [0, 1], 'a paint after the fallback reveal must not reveal again');
+  assert.equal(reveals, 1);
+  old.emit('hide');
+  old.emit('show');
+  f.create({ width: 400, height: 600, show: true }, old);
+  paint();
+  await Promise.resolve();
+  assert.deepEqual(old.opacities, [0, 1, 0, 0], 'a paint after the page moved hosts must not reveal the old host');
+  old.emit('hide');
+  old.emit('show');
+  assert.deepEqual(old.opacities, [0, 1, 0, 0], 'a transferred page belongs to its new host');
+});
+
+test('a resize emitted while minimizing cannot leave the retained view at 0×0 after restore', () => {
+  const f = fixture();
+  const win = f.create({ width: 400, height: 600, show: true });
+  const view = f.views[0];
+  assert.deepEqual(view.bounds, { x: 0, y: 0, width: 400, height: 600 });
+  // Windows reports a 0×0 content size for a minimized host, and minimize can
+  // emit 'resize' in that state.
+  win.minimized = true;
+  win.size = [0, 0];
+  win.emit('resize');
+  win.emit('minimize');
+  assert.deepEqual(view.bounds, { x: 0, y: 0, width: 400, height: 600 }, 'a minimized size must not reach the view');
+  // Restoring to the same bounds emits 'restore' without another 'resize'.
+  win.minimized = false;
+  win.size = [400, 600];
+  win.emit('restore');
+  assert.deepEqual(view.bounds, { x: 0, y: 0, width: 400, height: 600 });
+  // Bounds that changed while minimized are applied when the host is restored.
+  win.minimized = true;
+  win.size = [0, 0];
+  win.emit('resize');
+  win.minimized = false;
+  win.size = [420, 640];
+  win.emit('restore');
+  assert.deepEqual(view.bounds, { x: 0, y: 0, width: 420, height: 640 });
+});
+
 function fixture() {
   const views = [];
   class BaseWindow extends EventEmitter {
@@ -53,8 +143,9 @@ function fixture() {
     getContentSize() { return this.size; }
     isDestroyed() { return this.destroyed === true; }
     isVisible() { return this.options.show === true; }
-    isMinimized() { return false; }
+    isMinimized() { return this.minimized === true; }
     setTitle(title) { this.title = title; }
+    setOpacity(value) { (this.opacities ||= []).push(value); }
     destroy() { this.destroyed = true; this.emit('closed'); }
   }
   class WebContentsView {
@@ -72,7 +163,7 @@ function fixture() {
     setBackgroundColor(color) { this.color = color; }
     setBounds(bounds) { this.bounds = bounds; }
   }
-  return { views, create: (options, previous) => createRetainedWindow({ BaseWindow, WebContentsView }, options, previous) };
+  return { views, create: (options, previous, hooks) => createRetainedWindow({ BaseWindow, WebContentsView }, options, previous, hooks) };
 }
 
 test('changing transparency and mini-window chrome retains a single page across repeated host transfers', () => {

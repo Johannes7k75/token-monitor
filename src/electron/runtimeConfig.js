@@ -12,6 +12,7 @@ const { normalizeCustomScanPaths } = require('../shared/customScanPaths');
 const { limitProviderSettingKeys } = require('../shared/limits/accounts');
 const { normalizeCursorAccountIds } = require('../shared/providers/cursor/account');
 const { limitsAccountConfig } = require('./limits/accountSettings');
+const { networkProxySource } = require('./networkProxy');
 
 const DEFAULT_ALL_TIME_SINCE = '2024-01-01';
 
@@ -64,8 +65,10 @@ const LIMITS_RECONFIGURE_KEYS = Object.freeze([
   'limitsRefreshMode',
   'limitsRefreshMs',
   'cursorDisabledAccountIds',
+  'cursorManualAccountIds',
   'opencodeLocalLimitsEnabled',
-  'claudeCliFallbackEnabled'
+  'claudeCliFallbackEnabled',
+  'antigravityLocalLimitsEnabled'
 ]);
 const SINK_STRUCTURAL_KEYS = Object.freeze(['syncUploadIntervalMs']);
 // Derived from the account declarations: every watched field plus a
@@ -120,7 +123,7 @@ function usageConfigFromSettings(settings = {}, context = {}) {
     watchTriggersCollection: context.watchTriggersCollection !== false,
     intervalRequiresActivity: Boolean(context.intervalRequiresActivity),
     watchDebounceMs: Number(context.watchDebounceMs || 1500),
-    wslScanEnabled: settings.wslScanEnabled !== false,
+    wslScanEnabled: settings.wslScanEnabled === true,
     onError: context.onError,
     logger: context.logger
   };
@@ -143,12 +146,17 @@ function limitsConfigFromSettings(settings = {}, context = {}) {
     limitsRefreshMs: normalizeLimitsRefreshMs(settings.limitsRefreshMs),
     claudePrepaidBalanceEnabled: settings.claudePrepaidBalanceEnabled !== false,
     claudeCliFallbackEnabled: settings.claudeCliFallbackEnabled !== false,
+    antigravityLocalLimitsEnabled: settings.antigravityLocalLimitsEnabled !== false,
     opencodeLocalLimitsEnabled: settings.opencodeLocalLimitsEnabled === true,
     opencodeAmbientEnabled: settings.opencodeAmbientEnabled !== false,
     // Every declared account field: settings lane, declared env fallbacks,
     // declared default. The workbuddy fields below stay hand-written because
     // the desktop session rewrites their lanes entirely.
     ...limitsAccountConfig(settings, context),
+    // Ownership metadata belongs to the desktop account lifecycle, not a
+    // renderer-editable credential field. Missing metadata preserves headless use.
+    cursorManualAccountIds: Array.isArray(settings.cursorManualAccountIds)
+      ? normalizeCursorAccountIds(settings.cursorManualAccountIds) : undefined,
     workbuddyLocalSessions: context.workbuddyDesktopSessionEnabled === true && Array.isArray(context.workbuddyLocalSessions)
       ? context.workbuddyLocalSessions
       : undefined,
@@ -210,7 +218,9 @@ function diagnosticConfigurationFromSettings(settings = {}, context = {}) {
       context.syncUploadIntervalMs ?? settings.syncUploadIntervalMs
     ),
     limitsRefreshMode: limits.limitsRefreshMode,
-    limitsRefreshMs: limits.limitsRefreshMs
+    limitsRefreshMs: limits.limitsRefreshMs,
+    networkProxySource: networkProxySource(settings, context.limits?.env),
+    claudeCliFallbackEnabled: limits.claudeCliFallbackEnabled
   };
 }
 
@@ -226,10 +236,12 @@ function classifySettingsChange(previous = {}, next = {}) {
   const limitScopes = [];
   for (const [provider, keys] of Object.entries(LIMIT_PROVIDER_SETTING_KEYS)) {
     if (!changedAny(previous, next, keys)) continue;
-    // A fallback preference does not change account identity. Keep last-good
-    // readings if the ensuing OAuth-only refresh fails transiently.
-    const preserveReadings = provider === 'claude'
-      && !changedAny(previous, next, keys.filter((key) => key !== 'claudeCliFallbackEnabled'));
+    // A source preference does not change OAuth account identity. Antigravity
+    // separately retires its local RPC rows when detection is turned off.
+    const sourcePreference = provider === 'claude' ? 'claudeCliFallbackEnabled'
+      : provider === 'antigravity' ? 'antigravityLocalLimitsEnabled' : '';
+    const preserveReadings = sourcePreference
+      && !changedAny(previous, next, keys.filter((key) => key !== sourcePreference));
     limitScopes.push({ provider, ...(preserveReadings ? { preserveReadings: true } : {}) });
   }
   return {

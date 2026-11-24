@@ -66,7 +66,7 @@ test('tray and signal quit flush plugin and quota history state before immediate
   const events = [];
   const context = { console, quitRequested: false, quitInProgress: false,
     pluginRuntime: { dispose() { events.push('flush'); } },
-    stopPersistBoundsTimer() {}, stopLocalCollector() {}, stopStatsStream() {}, stopHostStats() {},
+    cancelMainWindowHibernate() {}, stopPersistBoundsTimer() {}, stopLocalCollector() {}, stopStatsStream() {}, stopHostStats() {},
     stopSyncCollector() {}, stopIcloudRuntime() {}, terminateUsageHostSubprocesses() {},
     syncStatsPublication: { cancel() {} }, macWidgetSnapshotController: null, macWidgetDemand: null,
     stopEmbeddedHub() {}, stopDiscordRpc() {}, sessionUsageArchiveStore: { close() {} }, tray: null,
@@ -96,14 +96,16 @@ test('an aborted updater handoff can reopen quota history after draining the pri
   const { createUpdateInstallQuitGuard } = require('../../src/electron/updateInstallQuit');
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'quota-update-recovery-'));
   let beforeQuit;
+  let historyOptions;
   const events = [];
   const clock = new Date(2026, 10, 3, 12).getTime();
   const context = {
-    path, createLimitsHistoryStore: (file, options) => createLimitsHistoryStore(file, { ...options, now: () => clock }), limitsHistoryStore: null,
+    settings: { hubMode: 'local', hubUrl: 'https://hub.test/', hubHostPort: 17321 }, normalizeHubPort: port => port,
+    path, createLimitsHistoryStore: (file, options) => { historyOptions = options; return createLimitsHistoryStore(file, { ...options, now: () => clock }); }, limitsHistoryStore: null,
     limitsHistoryController: { dispose() { events.push('preview-close'); }, refresh() {} },
     app: { getPath: () => directory, on: (_event, callback) => { beforeQuit = callback; } },
-    console, quitRequested: false, skipForcedQuit: false,
-    antigravityOAuthLoginController: null, workbuddyManagedAccountService: null,
+    console, quitRequested: false, skipForcedQuit: false, idleHeapCollector: null, cancelMainWindowHibernate() {},
+    cancelAntigravityManagedAccountLogin() {}, workbuddyManagedAccountService: null,
     resetMacWidgetReloadThrottle() {}, rateRefreshTimer: null, appUpdateBackgroundTimer: null,
     clearInterval() {}, stopTaskbarZOrderKeeper() {}, unregisterWindowToggleShortcut() {},
     edgeDockController: null, notchController: null, clearTimeout() {}, notchRateTimer: null,
@@ -114,11 +116,15 @@ test('an aborted updater handoff can reopen quota history after draining the pri
   const getter = main.slice(main.indexOf('function getLimitsHistoryStore()'), main.indexOf('async function limitsHistoryPayload('));
   const start = main.indexOf("app.on('before-quit'");
   const handler = main.slice(start, main.indexOf('\n});', start) + 4);
-  vm.runInNewContext(getter + handler, context);
+  const config = main.slice(main.indexOf('function effectiveHubConfig('), main.indexOf('function hubDataFile('));
+  vm.runInNewContext(config + getter + handler, context);
   const now = clock;
   const row = (offset, used) => ({ provider: 'codex', accountKey: 'update-test', status: 'ok', updatedAt: new Date(now + offset).toISOString(),
     windows: [{ kind: 'weekly', usedPercent: used }] });
   const previous = context.getLimitsHistoryStore();
+  assert.equal(context.effectiveHubConfig().url, null, 'local mode has no active Hub URL');
+  assert.ok(historyOptions.legacyScopes().includes('client|https://hub.test'), 'saved Hub history remains discoverable in local mode');
+  assert.ok(historyOptions.legacyScopes().includes('host|http://127.0.0.1:17321'));
   await previous.record('local', { providers: [row(-300_000, 20)] });
   const drain = previous.closeSync;
   previous.closeSync = () => { events.push('history-drain'); drain(); };

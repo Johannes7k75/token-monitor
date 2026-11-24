@@ -11,7 +11,7 @@ const { createPluginRuntime, registerPluginScheme } = require('../src/electron/p
 const root = path.resolve(__dirname, '..');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tm-trusted-app-'));
 const evidence = process.env.TM_PLUGIN_EVIDENCE || scratch;
-if (process.env.TM_WINDOW_FOCUS_ONLY === '1') app.setPath('userData', scratch);
+if (process.env.TM_WINDOW_FOCUS_ONLY === '1' || process.env.TM_PLUGIN_UPDATE_FLOW === '1') app.setPath('userData', scratch);
 const pageKeys = ['home', 'tool', 'device', 'model', 'project', 'session', 'status', 'limits', 'trends'];
 const fixtureDir = path.join(scratch, 'author-source');
 fs.cpSync(path.join(root, 'tests/fixtures/trusted-plugin'), fixtureDir, { recursive: true });
@@ -134,12 +134,13 @@ app.whenReady().then(async () => {
   win.webContents.on('render-process-gone', (_event, details) => { console.error(details); app.exit(1); });
   session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (_details, callback) => callback({ cancel: true }));
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => callback({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [require('../src/electron/contentSecurityPolicy').contentSecurityPolicyForRequest(details)] } }));
+  let domHistoryOpens = 0;
   const handlers = {
     'settings:get': () => settings,
-    'settings:displayPreview': (_event, surface, phase, slots) => require('../src/electron/displayPreview').buildDisplayPreview(settings, surface, phase, process.platform, Date.now(), slots),
     'settings:update': async (event, patch) => { const after = await runtime.beforeSettingsChange(event, patch); settings = { ...settings, ...patch }; runtime.settingsChanged(); await after(); return settings; },
     'app:getInfo': () => ({ version: 'fixture', platform: process.platform, systemUiTheme: 'dark', loginItemSupported: false }),
     'appUpdate:get': () => ({}), 'appearance:getNativeMaterial': () => null,
+    'limitsHistory:open': (_event, { key }) => key === '__dom_probe__' ? domHistoryOpens : ++domHistoryOpens,
     'stats:get': () => stats, 'stream:status': () => ({ connected: true, mode: 'local' }),
     'syncContent:status': () => ({ identity: 'fixture', available: false }),
     'hub:getInfo': () => ({ mode: 'local', devices: [] }), 'hub:getBuildStatus': () => ({}),
@@ -163,7 +164,34 @@ app.whenReady().then(async () => {
   const demandListener = (event, { surface, refs }) => pluginCalls.push({ channel: 'plugins:demand', frameUrl: event.senderFrame?.url, surface, refs });
   ipcMain.on('plugins:demand', demandListener);
   const toggleDialogs = [], toggleResponses = []; let toggleResponse = 1, selectedDirectory = fixtureDir;
-  runtime = createPluginRuntime({ electron: { BrowserWindow, ipcMain: pluginIpc, session, utilityProcess,
+  const updateFlow = process.env.TM_PLUGIN_UPDATE_FLOW === '1';
+  const updateVersions = new Map([['trusted-fixture', '1.0.0'], ['third-fixture', '1.0.0']]);
+  const maintainerSource = require('../src/electron/plugins/maintainerSources')[0];
+  const thirdSourceUrl = 'https://third.example/catalog.json';
+  const updatePackages = new Map();
+  if (updateFlow) {
+    const { packageDirectory } = require('../src/electron/plugins/package');
+    const original = JSON.parse(packageDirectory(fixtureDir).bytes);
+    for (const id of updateVersions.keys()) for (const version of ['1.0.0', '1.1.0']) {
+      const pkg = structuredClone(original);
+      Object.assign(pkg.manifest, { id, version, author: 'ExampleDev' });
+      updatePackages.set(`${id}/${version}`, Buffer.from(JSON.stringify(pkg)));
+    }
+  }
+  const updateSession = updateFlow ? { defaultSession: session.defaultSession, fromPartition: () => ({ fetch: async url => {
+    const id = url === maintainerSource.url ? 'trusted-fixture' : url === thirdSourceUrl ? 'third-fixture' : null;
+    if (id) {
+      const version = updateVersions.get(id), base = id === 'third-fixture' ? 'https://third.example' : 'https://community.example';
+      const sha256 = require('../src/electron/plugins/package').digest(updatePackages.get(`${id}/${version}`));
+      return new Response(JSON.stringify({ format: 1, title: 'Fixture catalog', plugins: [{ id, name: 'Update fixture', author: 'ExampleDev', versions: [
+        { version, url: `${base}/${id}/${version}`, sha256, changelog: '直接顯示的更新說明。' }
+      ] }] }));
+    }
+    const parsed = new URL(url), pkg = updatePackages.get(parsed.pathname.slice(1));
+    if (pkg) return new Response(pkg);
+    return new Response(JSON.stringify({ format: 1, title: 'Empty fixture catalog', plugins: [] }));
+  } }) } : session;
+  runtime = createPluginRuntime({ electron: { BrowserWindow, ipcMain: pluginIpc, session: updateSession, utilityProcess,
     dialog: { showMessageBox: async (_owner, options) => { toggleDialogs.push(options); return { response: toggleResponses.length ? toggleResponses.shift() : toggleResponse }; }, showOpenDialog: async () => ({ canceled: false, filePaths: [selectedDirectory] }) } },
     userDataDir: scratch, getSettings: () => settings, getAppSettings: () => settings, getContext: () => ({ source: 'fixture' }), getLocale: () => 'zh-TW',
     isMainSender: event => event.sender === win.webContents, persistPluginStates: pluginStates => patch({ pluginStates }), persistManagementSettings: patch,
@@ -173,6 +201,15 @@ app.whenReady().then(async () => {
   const js = source => win.webContents.executeJavaScript(source);
   const capture = async () => { await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))'); return win.webContents.capturePage(); };
   await waitFor("state.stats?.periods?.today?.totalTokens === 125000", 'App initialization');
+  if (process.env.TM_DOM_REGRESSION === '1') {
+    // DOM focus coverage remains available without OS desktop activation.
+    win.webContents.debugger.attach('1.3');
+    await win.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
+    win.focus();
+    console.log(await js(fs.readFileSync(path.join(root, 'tests/fixtures/app-dom-regression.cjs'), 'utf8')));
+    assertConsoleClean();
+    await runtime.dispose(); clearTimeout(deadline); win.destroy(); app.exit(0); return;
+  }
   assert.equal(runtime.manager.backendCount(), 0);
   await pause(150);
   fs.writeFileSync(path.join(evidence, 'app-native.png'), (await capture()).toPNG());
@@ -181,68 +218,59 @@ app.whenReady().then(async () => {
   fs.writeFileSync(path.join(evidence, 'comparison-native.png'), (await capture()).toPNG());
   await js("openViewFromTray('home')");
   console.log('PASS actual App renderer initialized without plugin work');
-  if (process.env.TM_PREVIEWS_ONLY === '1') {
-    const baseline = process.env.TM_EXPECT_BASELINE === '1';
-    const results = [];
-    await js(`window.previewMessages=[];window.addEventListener('message',event=>{
-      if(event.data?.type?.startsWith('display-preview-'))window.previewMessages.push({type:event.data.type,url:event.source.location.href});
-    });els.settingsButton.click();document.querySelector('[data-settings-section=window]').click()`);
-    await pause(500);
-    for (const surface of ['edgeDock','notch']) {
-      const entry = surface === 'edgeDock' ? '.display-settings-row:first-child .display-settings-open' : '#display-tab-notch';
-      await js(`document.querySelector('${entry}').scrollIntoView({block:'center',behavior:'instant'});document.querySelector('${entry}').click()`);
-      const stage = `#display-page-${surface} .display-settings-preview`;
-      await waitFor(`document.querySelector('${stage} iframe')`, `${surface} iframe creation`);
-      if (baseline) await pause(3400);
-      else await waitFor(`document.querySelector('${stage} iframe')?.dataset.ready==='true' && !document.querySelector('${stage} iframe').hidden`, `${surface} ready/render`);
-      await pause(500);
-      await js(`document.querySelector('#display-page-${surface} .display-settings-title').scrollIntoView({block:'start',behavior:'instant'})`);
-      await pause(200);
-      fs.writeFileSync(path.join(evidence, `${surface}-preview.png`), (await capture()).toPNG());
-      if (baseline) {
-        assert.equal(await js(`document.querySelector('${stage} iframe')?.dataset.ready==='true'`), false);
-        results.push({surface,ready:false,errors:[...errors]});
-        continue;
+  if (updateFlow) {
+    await js("pluginApi.discoverCatalog(true)");
+    const custom = await js(`pluginApi.addSource({url:${JSON.stringify(thirdSourceUrl)}})`);
+    const thirdSource = custom.sources.find(source => source.url === thirdSourceUrl).id;
+    await js("els.settingsButton.click();document.querySelector('[data-settings-section=plugins]').click()");
+    await waitFor("document.querySelector('#pluginSettingsList [data-tab=installed]')", 'plugin management');
+    for (const [id, sourceId, third] of [['trusted-fixture', maintainerSource.id, false], ['third-fixture', thirdSource, true]]) {
+      await js(`pluginApi.catalogPreview(${JSON.stringify(sourceId)},${JSON.stringify(id)},'1.0.0').then(preview=>pluginApi.install(preview.token,{trustInstall:true}))`);
+      updateVersions.set(id, '1.1.0');
+      await js(`pluginApi.refreshSource(${JSON.stringify(sourceId)}).then(()=>pluginSettingsPanel.refresh())`);
+      const card = `[data-plugin-id="${id}"]`;
+      await waitFor(`document.querySelector('${card} .plugin-update-action')`, 'available update');
+      assert.equal(await js(`Boolean(document.querySelector('${card} .plugin-update-note')?.getClientRects().length)`), true);
+      if (third) assert.equal(await js(`document.querySelector('${card} .plugin-source').textContent`), 'ExampleDev第三方 · 未經審核');
+      await js(`document.querySelector('${card}').scrollIntoView({block:'center',behavior:'instant'})`);
+      fs.writeFileSync(path.join(evidence, `update-${id}-before.png`), (await capture()).toPNG());
+      const dialogs = toggleDialogs.length;
+      await js(`document.querySelector('${card} .plugin-update-action').click()`);
+      if (third) {
+        await waitFor("document.querySelector('.plugin-package-preview .plugin-allow')", 'single trust review');
+        assert.equal(await js("Boolean(document.querySelector('dialog.plugin-catalog-dialog'))"), false);
+        assert.equal(await js("Boolean(document.querySelector('.plugin-package-preview .plugin-update-notes'))"), true);
+        await js("document.querySelector('.plugin-package-preview').scrollIntoView({block:'center',behavior:'instant'})");
+        fs.writeFileSync(path.join(evidence, 'update-third-party-review.png'), (await capture()).toPNG());
+        await js("document.querySelector('.plugin-package-preview .plugin-allow').click()");
       }
-      const frame = win.webContents.mainFrame.frames.find(frame => frame.url.includes(`surface=${surface === 'notch' ? 'notch' : 'rail'}&settingsPreview=1`));
-      assert.ok(frame, `${surface} real child frame`);
-      const read = () => frame.executeJavaScript(`({trusted:typeof window.tokenMonitorTrustedPlugins,node:typeof require,preview:bridge.isSettingsPreview,host:pluginHost===null,content:pluginContent===null,payload:state.payload,shapes:document.querySelectorAll('.edge-dock-shape path').length,text:document.getElementById('edgeDockRoot').textContent})`);
-      const first = await read();
-      assert.equal(first.trusted,'undefined');assert.equal(first.node,'undefined');assert.equal(first.preview,true);
-      assert.equal(first.host,true);assert.equal(first.content,true);assert.ok(first.payload);assert.ok(first.shapes>0);assert.ok(first.text.trim());
-      const firstZoom = surface === 'notch' ? first.payload.appearance.zoomFactor : first.payload.side;
-      if (surface === 'notch') {
-        await js("document.querySelector('#display-notch-appearance-tab').click();document.querySelector('input[name=notchSize][value=large]').click()");
-      } else {
-        await js("document.querySelector('#display-edgeDock-appearance-tab').click();document.querySelector('input[name=edgeDockSide][value=left]').click()");
-      }
-      let updated;
-      for(let i=0;i<100;i++) {
-        updated=await read();
-        if((surface==='notch'?updated.payload.appearance.zoomFactor:updated.payload.side)!==firstZoom)break;
-        await pause(40);
-      }
-      assert.notEqual(surface==='notch'?updated.payload.appearance.zoomFactor:updated.payload.side,firstZoom, `${surface} settings reaches existing renderer`);
-      if(surface==='notch') {
-        await js("document.querySelector('#display-page-notch [data-phase=closed]').click()");
-        for(let i=0;i<100&&(await read()).payload.expanded;i++)await pause(40);
-        assert.equal((await read()).payload.expanded,false);
-        await js("document.querySelector('#display-page-notch [data-phase=open]').click()");
-        for(let i=0;i<100&&!(await read()).payload.expanded;i++)await pause(40);
-        assert.equal((await read()).payload.expanded,true);
-      }
-      results.push({surface,ready:true,noTrustedBridge:true,noNode:true,pluginHost:false,nativeShapes:first.shapes,settingsUpdated:true});
+      await waitFor(`state.pluginCatalog.plugins.find(p=>p.id==='${id}')?.version==='1.1.0'`, 'updated package revision');
+      await waitFor("document.querySelector('#pluginSettingsList')?.getAttribute('aria-busy')==='false'", 'update action completed');
+      assert.equal(toggleDialogs.length, dialogs, 'no redundant confirmation for clean UI');
+      assert.equal(runtime.manager.list().plugins.find(plugin => plugin.id === id).trusted, true);
+      assert.equal(await js("Boolean(document.querySelector('.plugin-package-preview,dialog.plugin-catalog-dialog'))"), false);
+      await js(`document.querySelector('${card}').scrollIntoView({block:'center',behavior:'instant'})`);
+      fs.writeFileSync(path.join(evidence, `update-${id}-after.png`), (await capture()).toPNG());
+      console.log(`PASS actual App ${third ? 'third-party two-click' : 'community one-click'} verified catalog update, visible notes and retained trust`);
     }
-    const messages=await js('window.previewMessages');
-    const previewCalls=pluginCalls.filter(call=>call.frameUrl?.includes('settingsPreview=1'));
-    assert.deepEqual(previewCalls,[]);assert.equal(runtime.manager.backendCount(),0);
-    assert.ok(pluginCalls.some(call=>!call.frameUrl?.includes('settingsPreview=1')), 'runtime observation includes parent calls');
-    if(baseline) {assert.ok(errors.some(text=>text.includes('contentSelections')));assert.equal(messages.filter(message=>message.type==='display-preview-ready').length,0);}
-    else {assertConsoleClean();assert.equal(messages.filter(message=>message.type==='display-preview-ready').length,2);}
-    fs.writeFileSync(path.join(evidence,'preview-results.json'),JSON.stringify({baseline,results,messages,previewCalls,backendCount:runtime.manager.backendCount(),errors,electron:process.versions.electron,chrome:process.versions.chrome},null,2));
-    console.log('PASS actual no-preload preview iframe checks',JSON.stringify(results));
-    ipcMain.removeListener('plugins:demand',demandListener);
-    await runtime.dispose();runtime=null;win.destroy();clearTimeout(deadline);app.exit(0);return;
+    await js("pluginApi.place('third-fixture/panel','page',true);els.settingsButton.click();openViewFromTray('plugin:third-fixture/panel')");
+    await waitFor("document.querySelector('[aria-label=\"Fixture draft\"]')", 'author UI before cleanup failure');
+    await js("globalThis.fixtureCleanupFailure=true");
+    toggleResponses.push(0);
+    await js("pluginApi.setEnabled('third-fixture',false)");
+    await js("els.settingsButton.click();pluginSettingsPanel.refresh()");
+    await waitFor("document.querySelector('[data-plugin-id=\"third-fixture\"] .plugin-recover')", 'explicit recovery action');
+    assert.equal(settings.pluginStates['third-fixture'].enabled, false);
+    await js("document.querySelector('.plugin-recover').scrollIntoView({block:'center',behavior:'instant'})");
+    fs.writeFileSync(path.join(evidence, 'update-recovery-action.png'), (await capture()).toPNG());
+    const reloaded = new Promise(resolve => win.webContents.once('did-finish-load', resolve));
+    await js("document.querySelector('.plugin-recover').click()");
+    await reloaded;
+    await waitFor("state.pluginCatalog?.plugins?.find(p=>p.id==='third-fixture')?.recoveryRequired===false", 'recovered host');
+    assert.equal(settings.pluginStates['third-fixture'].enabled, false);
+    console.log('PASS actual App explicit lifecycle recovery reloads the affected host without changing plugin enablement');
+    assertConsoleClean(['Intentional fixture cleanup failure']); clearTimeout(deadline);
+    await runtime.dispose(); runtime = null; win.destroy(); app.exit(0); return;
   }
   const preview = await js("tokenMonitor.plugins.importPackage('directory')");
   if (process.env.TM_DEFAULT_PLACEMENTS === '1') {
@@ -441,7 +469,7 @@ app.whenReady().then(async () => {
       // the production main blur callback, not the renderer blur event.
       context.win=win;context.suppressNextBlurHide=false;context.quitRequested=false;
       context.nudgeTaskbarZOrder=()=>{};context.scheduleFloatingBubbleAutoCollapse=()=>{};
-      vm.runInContext(source.slice(source.indexOf("  win.on('blur', () => {"),source.indexOf("  win.on('resized',",source.indexOf("  win.on('blur', () => {"))),context);
+      vm.runInContext(source.slice(source.indexOf("  win.on('blur', () => {"),source.indexOf("  const onBoundsChange =",source.indexOf("  win.on('blur', () => {"))),context);
       const other = new BrowserWindow({show:false,width:240,height:140,webPreferences:{sandbox:true}});
       try {
         await other.loadURL('data:text/html,<p>Isolated focus departure</p>');
@@ -918,7 +946,7 @@ app.whenReady().then(async () => {
     };
     await js("els.settingsButton.click();document.querySelector('[data-settings-section=window]').click()");
     for (const [surface, key] of [['floatingBubble', 'floatingBubbleCustomLayout'], ['notch', 'notchCustomLayout']]) {
-      const entry = surface === 'floatingBubble' ? '.display-settings-row:nth-child(3) .display-settings-open' : '#display-tab-notch';
+      const entry = `#display-tab-${surface}`;
       await frameVisible(entry);
       await js(`document.querySelector('${entry}').click()`);
       if (surface === 'floatingBubble') {

@@ -1,17 +1,29 @@
 'use strict';
 
 const path = require('node:path');
+const os = require('node:os');
+const { applyWindowsChrome } = require('../windowsChrome');
+const { syncWindowsBackdrop } = require('../windowsBackdrop');
+const { createCardMotionDriver } = require('../cardMotion');
+const { cardCanvasBounds, createCardPointerRouting, maskCardMaterial } = require('../cardCanvas');
+const { cardCommands } = require('../renderer/edgeDock/shapes');
+const { primaryButtonDown } = require('../edgeDock/pointerButtons');
+const { parkedCardBounds, createCardWindowVisibility } = require('../cardWindow');
 const { CARD_MOVE_MS, CARD_SPRING, advanceCardFrame } = require('../cardSpring');
 const motionPreference = require('../motionPreference');
 const { attachNativeMaterialVisibility, syncNativeMaterialVisibility, getNativeMaterialState } = require('../nativeMaterialVisibility');
+
+const OWNER_DISMISS_EVENTS = ['blur', 'hide', 'closed', 'move', 'resize', 'minimize'];
 
 function historyBounds(owner, rect, workArea, zoom = 1) {
   const width = Math.min(Math.round(310 * zoom), workArea.width - 16);
   const height = Math.min(Math.round(420 * zoom), workArea.height - 16);
   const right = owner.x + owner.width + 8;
   const left = owner.x - width - 8;
-  const x = right + width <= workArea.x + workArea.width - 8 ? right
-    : left >= workArea.x + 8 ? left : owner.x + owner.width - width;
+  const preferLeft = owner.x + owner.width / 2 >= workArea.x + workArea.width / 2;
+  const candidates = preferLeft ? [left, right] : [right, left];
+  const x = candidates.find(candidate => candidate >= workArea.x + 8
+    && candidate + width <= workArea.x + workArea.width - 8) ?? owner.x + owner.width - width;
   return {
     x: Math.round(Math.max(workArea.x + 8, Math.min(x, workArea.x + workArea.width - width - 8))),
     y: Math.round(Math.max(workArea.y + 8, Math.min(owner.y + rect.y * zoom - 22, workArea.y + workArea.height - height - 8))),
@@ -19,17 +31,19 @@ function historyBounds(owner, rect, workArea, zoom = 1) {
   };
 }
 
-function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner, read, logger = console.log, setTimer = setTimeout, clearTimer = clearTimeout, getOpenMode = () => 'hover', getMaterialOptions = () => ({ enabled: false }), now = Date.now, setFrameTimer = setInterval, clearFrameTimer = clearInterval }) {
+function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner, read, logger = console.log, setTimer = setTimeout, clearTimer = clearTimeout, getOpenMode = () => 'hover', getMaterialOptions = () => ({ enabled: false }), now = Date.now, setFrameTimer = setInterval, clearFrameTimer = clearInterval, setFadeTimer = setInterval, clearFadeTimer = clearInterval, setPointerTimer = setInterval, clearPointerTimer = clearInterval, platform = process.platform, osRelease = os.release(), syncWindowsMaterial = syncWindowsBackdrop, applyShapeMask = maskCardMaterial, readPrimaryButton = () => primaryButtonDown(platform) }) {
   let win = null;
   let owner = null;
   let key = '';
   let source = '';
   let ready = false;
   let visible = false;
+  let presented = false;
   let timer = null;
   let ownerListeners = [];
-  let revision = 0;
+  let refreshRevision = 0;
   let pendingOpen = null;
+  let visibleRequestId = null;
   let activated = false;
   let anchor = null;
   let currentPayload = null;
@@ -38,8 +52,26 @@ function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner
   let placement = null;
   let animatePlacement = false;
   let frameMotion = null;
-  let frameTimer = null;
   let rendererReducedMotion = false;
+  let paintedFrame = null;
+  let paintedShape = null;
+  // Keep Windows DWM backdrops on a card-sized HWND: setShape does not reliably
+  // clip the material on a tall transparent canvas. macOS masks the material itself.
+  let rectangularFallback = platform !== 'darwin';
+  let pointerTimer = null;
+  const pointer = createCardPointerRouting({ platform, screen, getWindow: () => win,
+    getFrame: () => paintedFrame, isVisible: () => visible && presented,
+    primaryButtonDown: readPrimaryButton });
+
+  const frameDriver = createCardMotionDriver({ platform, now, setTimer: setFrameTimer, clearTimer: clearFrameTimer,
+    advance: advanceFrame, notify: payload => {
+      if (win && !win.isDestroyed()) win.webContents.send('limitsHistory:cardMotion', payload);
+    } });
+  const cardVisibility = createCardWindowVisibility({ reducedMotion, setTimer: setFadeTimer, clearTimer: clearFadeTimer });
+  function park() {
+    if (platform !== 'darwin' || Number.parseInt(osRelease, 10) >= 25 || visible || !win || win.isDestroyed()) return;
+    win.setBounds(parkedCardBounds(win.getBounds(), screen.getAllDisplays()));
+  }
 
   function inside(point, bounds) {
     return bounds && point.x >= bounds.x && point.x <= bounds.x + bounds.width
@@ -47,7 +79,8 @@ function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner
   }
   function crossingGap(point) {
     if (!anchor || !win?.isVisible()) return false;
-    const panel = win.getBounds();
+    const panel = paintedFrame;
+    if (!panel) return false;
     const left = panel.x >= anchor.x + anchor.width ? anchor.x + anchor.width : panel.x + panel.width;
     const right = panel.x >= anchor.x + anchor.width ? panel.x : anchor.x;
     return right >= left && inside(point, { x: left, y: Math.min(anchor.y, panel.y), width: right - left,
@@ -57,9 +90,8 @@ function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner
   function reducedMotion() {
     return rendererReducedMotion || motionPreference.shouldReduceMotion(currentPayload?.appearance?.reduceMotion, currentPayload?.appearance?.systemReducedMotion === true);
   }
-  function cancelFrameMotion() {
-    clearFrameTimer(frameTimer);
-    frameTimer = null;
+  function cancelFrameMotion(options) {
+    frameDriver.cancel(options);
     frameMotion = null;
   }
   function advanceFrame() {
@@ -68,38 +100,78 @@ function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner
     const elapsed = now() - motion.startedAt;
     const done = elapsed >= CARD_MOVE_MS || reducedMotion();
     const frame = advanceCardFrame(motion, elapsed, CARD_SPRING, done);
-    win.setBounds({ ...frame, width: Math.max(1, frame.width), height: Math.max(1, frame.height) });
+    paintFrame({ ...frame, width: Math.max(1, frame.width), height: Math.max(1, frame.height) });
     if (done) cancelFrameMotion();
   }
   function placeFrame(target, animate) {
     if (frameMotion && !reducedMotion() && Object.keys(target).every(key => frameMotion.to[key] === target[key])) return;
-    const from = win.getBounds();
+    const from = paintedFrame || target;
     const velocity = frameMotion?.velocity || {};
-    const moving = win.isVisible() && (animate || frameMotion) && !reducedMotion()
+    const moving = presented && (animate || frameMotion) && !reducedMotion()
       && Object.keys(target).some(key => from[key] !== target[key]);
-    cancelFrameMotion();
-    if (!moving) { win.setBounds(target); return; }
+    cancelFrameMotion({ preserveFrameClock: Boolean(moving && frameMotion) });
+    if (!moving) { paintFrame(target); return; }
     frameMotion = { keys: Object.keys(target), from, to: target, velocity: { ...velocity }, initialVelocity: velocity,
       startedAt: now(), workArea: placement.workArea };
-    advanceFrame();
-    if (frameMotion) frameTimer = setFrameTimer(advanceFrame, 16);
+    frameDriver.start(frameMotion);
   }
-  function syncMaterial() { syncNativeMaterialVisibility(win, getMaterialOptions()); }
+  function materialOptions() {
+    return { ...getMaterialOptions(), ...(paintedShape ? { shape: paintedShape } : {}) };
+  }
+  function syncMaterial() {
+    const options = materialOptions();
+    syncNativeMaterialVisibility(win, options, platform);
+    syncWindowsMaterial(win, { enabled: options.enabled, mode: options.windowsBackdrop }, { platform });
+    if (paintedShape && getNativeMaterialState(win).type === 'vibrancy') {
+      const display = screen.getDisplayMatching(win.getBounds());
+      if (!applyShapeMask(win, paintedShape.commands, paintedShape.width, paintedShape.height, display.scaleFactor || 2)) {
+        rectangularFallback = true;
+        paintedShape = null;
+        cancelFrameMotion();
+        if (placement) paintFrame({ ...paintedFrame });
+      }
+    }
+  }
+  function paintFrame(frame) {
+    paintedFrame = frame;
+    const bounds = cardCanvasBounds(frame);
+    const current = win.getBounds();
+    if (['x', 'y', 'width', 'height'].some(key => current[key] !== bounds[key])) {
+      win.setBounds({ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height });
+    }
+    const radius = 14 * win.webContents.getZoomFactor();
+    paintedShape = rectangularFallback ? null : {
+      commands: cardCommands({ width: bounds.width, height: bounds.cardHeight, y: bounds.cardY, radius }),
+      width: bounds.width, height: bounds.height
+    };
+    syncMaterial();
+    // A material failure above may have selected the small rectangular fallback.
+    if (paintedFrame !== frame) return;
+    const zoom = win.webContents.getZoomFactor();
+    win.webContents.send('limitsHistory:shapeFrame', { y: bounds.cardY / zoom, height: bounds.cardHeight / zoom });
+    pointer.sync();
+  }
   function send(payload, opening = false) {
     currentPayload = payload;
     expectedRender = ++renderSequence;
     syncMaterial();
-    win.webContents.send('limitsHistory:render', { ...payload, opening, renderToken: expectedRender,
+    win.webContents.send('limitsHistory:render', { ...payload, opening: opening || !presented, renderToken: expectedRender,
       layoutWidth: placement.bounds.width / win.webContents.getZoomFactor(), nativeMaterial: getNativeMaterialState(win) });
   }
   function cancelClose() { clearTimer(timer); timer = null; }
-  function hide() {
-    revision += 1;
-    pendingOpen = null;
+  function hide({ keepInteractiveOpen = false } = {}) {
+    const instant = reducedMotion();
+    refreshRevision += 1;
+    if (!keepInteractiveOpen || !pendingOpen?.interactive) pendingOpen = null;
     activated = false;
     anchor = null;
     cancelClose();
     visible = false;
+    visibleRequestId = null;
+    presented = false;
+    clearPointerTimer(pointerTimer);
+    pointerTimer = null;
+    pointer.sync();
     currentPayload = null;
     expectedRender = ++renderSequence;
     placement = null;
@@ -108,7 +180,13 @@ function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner
     cancelFrameMotion();
     key = '';
     if (owner && !owner.isDestroyed?.()) owner.webContents.send('limitsHistory:state', false);
-    if (win && !win.isDestroyed()) win.hide();
+    if (win && !win.isDestroyed() && win.isVisible()) {
+      win.setIgnoreMouseEvents(true);
+      if (platform === 'linux') {
+        cardVisibility.cancel(win);
+        win.hide();
+      } else cardVisibility.setVisible(win, false, instant ? 0 : undefined, { afterFade: park });
+    }
     ownerListeners.forEach(([event, listener]) => owner?.removeListener(event, listener));
     ownerListeners = [];
     owner = null;
@@ -120,42 +198,49 @@ function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner
       const point = screen.getCursorScreenPoint();
       if (!visible || activated || containsPoint(point) || inside(point, anchor)) return;
       if (crossingGap(point)) return leave();
-      hide();
+      hide({ keepInteractiveOpen: true });
     }, 600);
   }
   async function refresh() {
     if (getOpenMode() === 'off') return hide();
     if (!visible || !ready) return;
     if (getOpenMode() === 'click' && !activated) return hide();
-    const request = ++revision;
+    const request = ++refreshRevision;
     try {
       const payload = await read(key);
-      if (request !== revision || !visible) return;
+      if (request !== refreshRevision || !visible) return;
       if (payload === undefined) return; // superseded read, not a removed account
-      if (!payload || payload.source !== source) return hide();
+      if (!payload || payload.source !== source) return hide({ keepInteractiveOpen: true });
       send(payload);
     } catch (error) { logger(`[limits-history] ${error.message}`); }
   }
   function ensureWindow() {
     if (win && !win.isDestroyed()) return win;
     ready = false;
+    paintedFrame = null;
+    paintedShape = null;
+    rectangularFallback = platform !== 'darwin';
+    pointer.reset();
     win = new BrowserWindow({
       width: 310, height: 420, show: false, frame: false, focusable: false,
       resizable: false, minimizable: false, maximizable: false, fullscreenable: false,
-      skipTaskbar: true, alwaysOnTop: true, transparent: !(process.platform === 'win32' && getMaterialOptions().enabled), backgroundColor: '#00000000',
+      skipTaskbar: true, alwaysOnTop: true, transparent: true, backgroundColor: '#00000000',
       hasShadow: true,
-      ...(process.platform === 'darwin' ? { type: 'panel', acceptFirstMouse: true, vibrancy: 'hud', visualEffectState: 'active' } : {}),
-      ...(process.platform === 'win32' && getMaterialOptions().enabled ? { backgroundMaterial: 'acrylic' } : {}),
+      ...(platform === 'darwin' ? { type: 'panel', acceptFirstMouse: true, vibrancy: 'hud', visualEffectState: 'active' } : {}),
       webPreferences: { preload: path.join(__dirname, 'historyPreload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false }
     });
-    attachNativeMaterialVisibility(win, getMaterialOptions);
+    applyWindowsChrome(win, { round: true });
+    attachNativeMaterialVisibility(win, materialOptions, platform);
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', event => event.preventDefault());
     win.webContents.on('did-finish-load', () => {
+      // A reused renderer can leave this view opaque over the native glass.
+      // Reapply the transparent surface after load, before the card is revealed.
+      if (platform === 'darwin') win.setBackgroundColor('#00000000');
       ready = true;
       if (visible && currentPayload) send(currentPayload, true);
     });
-    win.on('closed', () => { hide(); win = null; ready = false; });
+    win.on('closed', () => { cardVisibility.cancel(win); hide(); win = null; ready = false; });
     win.loadFile(path.join(__dirname, '../renderer/limits/history.html')).catch(error => {
       logger(`[limits-history] ${error.message}`);
       hide();
@@ -170,50 +255,61 @@ function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner
     const rect = request.rect;
     if (!rect || !['x', 'y', 'width', 'height'].every(k => Number.isFinite(rect[k]))) return false;
     const interactive = request.interactive === true;
+    const requestId = interactive && Number.isSafeInteger(request.requestId) ? request.requestId : null;
     if (!interactive && (getOpenMode() === 'click' || activated || containsPoint(screen.getCursorScreenPoint()))) return false;
     if (visible && owner === parent && key === request.key) {
       cancelClose();
       if (interactive) {
+        pendingOpen = null;
         if (activated) hide();
-        else activated = true;
+        else {
+          activated = true;
+          visibleRequestId = requestId;
+        }
       }
       return true;
     }
     // Loading the reusable renderer and reading SQLite need not wait for each other.
+    if (!interactive && pendingOpen?.interactive) return false;
     const panel = ensureWindow();
-    const requestRevision = ++revision;
-    pendingOpen = { parent, key: request.key, interactive };
+    const openingRequest = { parent, key: request.key, interactive, requestId };
+    pendingOpen = openingRequest;
     const cancelPending = () => {
-      if (requestRevision === revision) { pendingOpen = null; revision += 1; }
+      if (pendingOpen === openingRequest) pendingOpen = null;
     };
-    parent.once('blur', cancelPending);
+    // The visible card can hide and detach its listeners while this read is pending.
+    for (const event of OWNER_DISMISS_EVENTS) parent.once(event, cancelPending);
     let payload;
     try { payload = await read(request.key); }
     catch (error) {
-      if (requestRevision === revision) pendingOpen = null;
+      cancelPending();
       logger(`[limits-history] ${error.message}`);
       return false;
     }
-    finally { parent.removeListener('blur', cancelPending); }
-    if (requestRevision !== revision) return false;
+    finally {
+      for (const event of OWNER_DISMISS_EVENTS) parent.removeListener(event, cancelPending);
+    }
+    if (pendingOpen !== openingRequest) return false;
     pendingOpen = null;
     if (!payload || getOpenMode() === 'off' || parent.isDestroyed() || !parent.isVisible() || !interactive && getOpenMode() === 'click') return false;
     if (owner !== parent) {
       hide();
       owner = parent;
-      for (const event of ['blur', 'hide', 'closed', 'move', 'resize', 'minimize']) {
+      for (const event of OWNER_DISMISS_EVENTS) {
         const listener = () => hide();
         owner.on(event, listener);
         ownerListeners.push([event, listener]);
       }
     }
     cancelClose();
+    refreshRevision += 1;
     animatePlacement = visible && key !== request.key;
     key = request.key;
     source = payload.source;
     currentPayload = payload;
-    const opening = !visible || !panel.isVisible();
+    const opening = !presented;
     visible = true;
+    visibleRequestId = requestId;
     activated = interactive;
     parent.webContents.send('limitsHistory:state', true, key);
     const bounds = parent.getBounds();
@@ -223,14 +319,14 @@ function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner
     const workArea = screen.getDisplayMatching(bounds).workArea;
     const target = historyBounds(bounds, rect, workArea, zoom);
     placement = { bounds: target, workArea };
-    if (opening) panel.setBounds(target);
+    if (opening) paintFrame(target);
     if (ready) send(payload, opening);
     return true;
   }
 
   function containsPoint(point) {
     if (!visible || !win?.isVisible()) return false;
-    return inside(point, win.getBounds());
+    return inside(point, paintedFrame);
   }
 
   function register() {
@@ -238,20 +334,30 @@ function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner
     ipcMain.on('limitsHistory:leave', (event, leavingKey) => {
       if (event.sender === pendingOpen?.parent.webContents && leavingKey === pendingOpen.key && !pendingOpen.interactive) {
         pendingOpen = null;
-        revision += 1;
       }
       if (event.sender === win?.webContents || event.sender === owner?.webContents && leavingKey === key) leave();
     });
     ipcMain.on('limitsHistory:enter', (event, enteringKey) => {
       if (event.sender === win?.webContents) {
         cancelClose();
-        if (pendingOpen && !pendingOpen.interactive) { pendingOpen = null; revision += 1; }
+        if (pendingOpen && !pendingOpen.interactive) pendingOpen = null;
       } else if (event.sender === owner?.webContents && enteringKey === key) cancelClose();
     });
-    ipcMain.on('limitsHistory:close', event => {
+    ipcMain.on('limitsHistory:close', (event, requestId) => {
+      if (Number.isSafeInteger(requestId)) {
+        if (pendingOpen?.requestId === requestId && event.sender === pendingOpen.parent.webContents) pendingOpen = null;
+        if (visibleRequestId === requestId && event.sender === owner?.webContents) hide({ keepInteractiveOpen: true });
+        return;
+      }
       if (event.sender === win?.webContents || event.sender === owner?.webContents || event.sender === pendingOpen?.parent.webContents) {
         hide();
       }
+    });
+    ipcMain.on('limitsHistory:cardFrame', (event, payload) => {
+      if (event.sender === win?.webContents) frameDriver.frame(payload?.motionId);
+    });
+    ipcMain.on('limitsHistory:pointer', event => {
+      if (event.sender === win?.webContents) pointer.sync();
     });
     ipcMain.on('limitsHistory:resize', (event, height, renderToken, animate, reduce) => {
       if (event.sender !== win?.webContents || !visible || !Number.isFinite(height) || renderToken !== expectedRender) return;
@@ -262,16 +368,27 @@ function createLimitsHistoryController({ BrowserWindow, screen, ipcMain, isOwner
         y: Math.round(Math.max(workArea.y + 8, Math.min(anchor.y - 22, workArea.y + workArea.height - nextHeight - 8))) };
       placeFrame(target, animatePlacement || animate === true);
       animatePlacement = false;
-      if (!win.isVisible()) win.showInactive();
+      if (!visible) return; // Native shape recovery can close the card.
+      if (!presented) {
+        presented = true;
+        if (platform === 'darwin') {
+          pointer.sync();
+          pointerTimer = setPointerTimer(() => pointer.sync(), 50);
+        } else win.setIgnoreMouseEvents(false);
+        cardVisibility.setVisible(win, true);
+      }
     });
   }
 
   function dispose() {
     hide();
+    cardVisibility.cancel(win);
     if (win && !win.isDestroyed()) win.destroy();
     win = null;
   }
-  return { register, refresh, hide, containsPoint, syncMaterial, dispose };
+  // A cached panel with no active or pending owner can outlive the main window.
+  const isIdleWindow = (target) => target === win && !owner && !pendingOpen;
+  return { register, refresh, hide, containsPoint, syncMaterial, isIdleWindow, dispose };
 }
 
 module.exports = { createLimitsHistoryController, historyBounds };

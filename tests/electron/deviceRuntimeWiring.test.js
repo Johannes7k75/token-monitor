@@ -36,7 +36,8 @@ test('targeted rescans stay strict while Cursor credential refresh is best effor
   // Login and logout must both request a refresh; future credential actions may
   // legitimately add more best-effort call sites without weakening this policy.
   assert.ok(
-    (main.match(/bestEffortTrackedUsageRefresh\('cursor', \{ forceSync: true \}\)/g) || []).length >= 2
+    (fs.readFileSync(path.join(__dirname, '../../src/electron/providers/cursor/accountService.js'), 'utf8').match(/refreshUsage\(\)/g) || []).length >= 2
+    && /refreshUsage: \(\) => bestEffortTrackedUsageRefresh\('cursor', \{ forceSync: true \}\)/.test(main)
   );
   assert.match(
     main,
@@ -394,5 +395,17 @@ test('a pending Claude fallback refresh cannot discard an earlier credential cle
     context.rememberPendingLimitInvalidation({ provider: 'claude' }, 'settings-change', { clear: false });
     assert.equal(pending.size, 1);
     assert.equal(pending.get('claude:*').clear, true);
+  }
+});
+
+test('MiniMax key settings and unchanged credential saves clear only API readings', () => {
+  const { classifySettingsChange } = require('../../src/electron/runtimeConfig');
+  const previous = { minimaxApiKey: 'key-A', minimaxBillingMode: 'api', minimaxApiRegion: 'cn' };
+  for (const patch of [{}, { minimaxApiKey: 'key-B' }, { minimaxBillingMode: 'token-plan' },
+    { minimaxApiRegion: 'intl' }, { minimaxApiProfiles: { saved: { apiKey: 'key-B' } } }]) {
+    const change = classifySettingsChange(previous, { ...previous, ...patch });
+    assert.deepEqual(settingsLimitInvalidationPlan(change, 'minimax'), [
+      { scope: { provider: 'minimax', source: 'api' }, reason: 'settings-change', options: { clear: true } }
+    ]);
   }
 });

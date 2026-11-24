@@ -122,8 +122,8 @@
   }
 
   // Amounts are integer hundredths of a unit so that summing many subscriptions
-  // never accumulates float error. Every supported currency is two-decimal, so
-  // the fixed ×100 holds; see normalizeSubscriptionCurrency.
+  // never accumulates float error. The fixed ×100 storage scale applies even
+  // to currencies displayed without decimals.
   function normalizeAmountMinor(value) {
     const amount = finiteNumber(value);
     if (amount === null) return 0;
@@ -529,6 +529,7 @@
     const accounts = providerAccounts(providers, subscription?.provider);
     if (accounts.length === 0) return null;
     const binding = normalizeBinding(subscription?.binding);
+    const isDevin = cleanText(subscription?.provider).toLowerCase() === 'devin';
 
     // Exact identifiers first. A key that has rotated simply fails to match and
     // falls through to the rungs below, so the healing this ladder exists for is
@@ -542,7 +543,8 @@
       // saved key never heals through email/name or sole-account fallback.
       if (subscription?.provider === 'workbuddy') return null;
     }
-    if (binding.accountEmail) {
+    // The same Devin login can belong to multiple quota organizations.
+    if (binding.accountEmail && !isDevin) {
       const byEmail = accounts.find(
         (account) => cleanText(account?.accountEmail || account?.email).toLowerCase() === binding.accountEmail
       );
@@ -556,6 +558,7 @@
     if (binding.profileName) {
       const named = accounts.filter((account) => cleanText(account?.accountName) === binding.profileName);
       if (named.length === 1) return named[0];
+      if (isDevin) return null;
     }
     // Nothing matched, but the provider has exactly one account, so there is no
     // ambiguity about what the user meant. This is the case that silently heals
